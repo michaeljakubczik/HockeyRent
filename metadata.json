@@ -1,0 +1,7 @@
+{
+  "name": "Verleihsystem für Hockeyequipment",
+  "description": "Ein privates System zur Verwaltung und zum Verleih von Inlineskates mit Bestandsübersicht und Statusverfolgung.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
