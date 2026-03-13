@@ -1,6 +1,6 @@
 {
-  "name": "Verleihsystem für Hockeyequipment",
-  "description": "Ein privates System zur Verwaltung und zum Verleih von Inlineskates mit Bestandsübersicht und Statusverfolgung.",
+  "name": "Wiesel HockeyRent",
+  "description": "Professionelles Verleihsystem für Hockey-Equipment der Wiesel.",
   "requestFramePermissions": [
     "camera"
   ]

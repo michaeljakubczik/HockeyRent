@@ -507,7 +507,7 @@ export default function App() {
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
                 <Package className="text-white w-5 h-5" />
               </div>
-              <h1 className="text-xl font-bold tracking-tight text-white">HockeyRent</h1>
+              <h1 className="text-xl font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
             </div>
           </div>
         </header>
@@ -515,7 +515,7 @@ export default function App() {
         <main className="max-w-5xl mx-auto px-4 py-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
             <div>
-              <h2 className="text-3xl font-extrabold text-white tracking-tight">Verfügbares Equipment</h2>
+              <h2 className="text-3xl font-extrabold text-white tracking-tight">Wiesel HockeyRent</h2>
               <p className="text-slate-400 mt-1">Hier siehst du alle Ausrüstungsteile, die aktuell zur Verfügung stehen.</p>
             </div>
             <div className="bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-2xl flex items-center gap-2">
@@ -603,7 +603,7 @@ export default function App() {
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
               <Package className="text-white w-5 h-5" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white">HockeyRent <span className="text-blue-500 font-medium">Admin</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white">Wiesel HockeyRent <span className="text-blue-500 font-medium">Admin</span></h1>
           </div>
           
           <nav className="hidden md:flex items-center gap-1">
@@ -697,7 +697,7 @@ export default function App() {
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
-              className="space-y-6"
+              className="space-y-10"
             >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
                 <div>
@@ -723,20 +723,48 @@ export default function App() {
               {availableItems.length === 0 ? (
                 <EmptyState icon={<Package className="w-12 h-12 text-slate-700" />} message="Kein Equipment im Bestand." />
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {availableItems.map(item => (
-                    <ItemCard 
-                      key={item.id} 
-                      item={item} 
-                      onRent={() => {
-                        setRentingItem(item);
-                        setRentForm(prev => ({ ...prev, fee_total: '' }));
-                      }}
-                      onEdit={() => { setEditItem(item); setCurrentView('add'); }}
-                      onDelete={() => handleDeleteItem(item.id)}
-                      onAddToBag={() => addToBag(item)}
-                      inBag={bag.some(b => b.id === item.id)}
-                    />
+                <div className="space-y-12">
+                  {Object.entries(
+                    availableItems.reduce((acc, item) => {
+                      const cat = item.category_label;
+                      if (!acc[cat]) acc[cat] = [];
+                      acc[cat].push(item);
+                      return acc;
+                    }, {} as Record<string, EquipmentItem[]>)
+                  )
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([category, catItems]) => (
+                    <div key={category} className="space-y-4">
+                      <div className="flex items-center gap-4">
+                        <h3 className="text-xl font-bold text-white border-l-4 border-blue-600 pl-3">{category}</h3>
+                        <div className="h-px flex-grow bg-slate-800"></div>
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{catItems.length} Teile</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                        {catItems
+                          .sort((a, b) => {
+                            const sizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
+                            const aIdx = sizeOrder.indexOf(a.size.toUpperCase());
+                            const bIdx = sizeOrder.indexOf(b.size.toUpperCase());
+                            if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+                            return a.size.localeCompare(b.size);
+                          })
+                          .map(item => (
+                            <ItemCard 
+                              key={item.id} 
+                              item={item} 
+                              onRent={() => {
+                                setRentingItem(item);
+                                setRentForm(prev => ({ ...prev, fee_total: '' }));
+                              }}
+                              onEdit={() => { setEditItem(item); setCurrentView('add'); }}
+                              onDelete={() => handleDeleteItem(item.id)}
+                              onAddToBag={() => addToBag(item)}
+                              inBag={bag.some(b => b.id === item.id)}
+                            />
+                          ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1197,25 +1225,25 @@ interface ItemCardProps {
 
 const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onAddToBag, inBag }) => {
   return (
-    <div className="bg-[#252936] rounded-3xl border border-slate-700/50 shadow-xl hover:shadow-2xl transition-all group relative overflow-hidden">
-      <div className="absolute top-4 right-4 flex gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
+    <div className="bg-[#252936] rounded-2xl border border-slate-700/50 shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col">
+      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all z-20">
         <button 
           onClick={(e) => { e.stopPropagation(); onEdit(); }}
-          className="p-2 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-blue-400 rounded-full shadow-lg border border-slate-700"
+          className="p-1.5 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-blue-400 rounded-lg shadow-lg border border-slate-700"
           title="Bearbeiten"
         >
-          <Edit className="w-4 h-4" />
+          <Edit className="w-3.5 h-3.5" />
         </button>
         <button 
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="p-2 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-red-400 rounded-full shadow-lg border border-slate-700"
+          className="p-1.5 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-red-400 rounded-lg shadow-lg border border-slate-700"
           title="Löschen"
         >
-          <Trash2 className="w-4 h-4" />
+          <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
       
-      <div className="aspect-[4/3] bg-[#1C1F2A] relative overflow-hidden">
+      <div className="aspect-square bg-[#1C1F2A] relative overflow-hidden">
         {item.image ? (
           <img 
             src={item.image} 
@@ -1224,55 +1252,47 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onA
             referrerPolicy="no-referrer"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-slate-700">
-            <ImageIcon className="w-12 h-12" />
+          <div className="w-full h-full flex items-center justify-center text-slate-800">
+            <ImageIcon className="w-8 h-8" />
           </div>
         )}
-        <div className="absolute top-4 left-4 flex flex-col gap-2">
-          <span className="bg-[#1C1F2A]/80 backdrop-blur-md text-blue-400 px-3 py-1 rounded-full text-[10px] font-bold border border-blue-500/20 uppercase tracking-wider">
-            {item.category_label}
-          </span>
-          <span className="bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-[10px] font-bold border border-white/10 uppercase tracking-wider">
-            GRÖSSE {item.size}
-          </span>
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[14px] font-black text-white tracking-tighter">
+              {item.item_code}
+            </span>
+            <span className="bg-blue-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold uppercase">
+              {item.size}
+            </span>
+          </div>
         </div>
       </div>
 
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="font-bold text-lg text-white">{item.brand}</h3>
-            {item.item_code && (
-              <span className="text-[10px] font-mono text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded">
-                {item.item_code}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-            <span className="text-xs font-bold text-blue-500 uppercase tracking-wider">Verfügbar</span>
-          </div>
+      <div className="p-3 flex-grow flex flex-col justify-between">
+        <div className="mb-2">
+          <h3 className="font-bold text-sm text-white truncate">{item.brand}</h3>
+          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">{item.category_label}</p>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <button
             onClick={onAddToBag}
             disabled={inBag}
-            className={`flex-1 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 ${
+            className={`flex-1 p-2 rounded-lg transition-all flex items-center justify-center ${
               inBag 
-                ? 'bg-slate-700 text-slate-500 cursor-not-allowed' 
-                : 'bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30'
+                ? 'bg-slate-800 text-slate-600 cursor-not-allowed' 
+                : 'bg-blue-600/10 text-blue-400 border border-blue-500/20 hover:bg-blue-600/20'
             }`}
+            title="In Tasche"
           >
             {inBag ? <CheckCircle2 className="w-4 h-4" /> : <ShoppingBag className="w-4 h-4" />}
-            {inBag ? 'In Tasche' : 'In Tasche'}
           </button>
           <button
             onClick={onRent}
-            className="flex-1 bg-slate-100 text-[#1C1F2A] font-bold py-3 rounded-xl hover:bg-white active:scale-95 transition-all flex items-center justify-center gap-2"
+            className="flex-[2] bg-slate-100 text-[#1C1F2A] font-bold py-2 rounded-lg hover:bg-white active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5"
           >
-            <ArrowRightLeft className="w-4 h-4" />
-            Verleihen
+            <ArrowRightLeft className="w-3.5 h-3.5" />
+            <span>Leihen</span>
           </button>
         </div>
       </div>
