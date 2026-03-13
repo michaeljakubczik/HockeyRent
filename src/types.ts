@@ -26,14 +26,16 @@ export interface EquipmentItem {
   brand: string;
   image: string | null;
   condition_note: string | null;
-  status: 'verfügbar' | 'verliehen';
+  status: 'verfügbar' | 'verliehen' | 'ausgemustert';
   created_at: string;
+  is_deleted?: boolean;
   // Joined fields for current rental
   active_rental_id?: number | null;
   verliehenAn?: string | null;
   verliehenAm?: string | null;
   bezahlt?: boolean;
   verliehenGebuehr?: number;
+  rental_items?: any[];
 }
 
 export interface Rental {

@@ -82,6 +82,7 @@ async function startServer() {
         .from('equipment_items')
         .select('id, item_code, category, category_label, size, brand, image')
         .eq('status', 'verfügbar')
+        .eq('is_deleted', false)
         .order('category', { ascending: true });
       
       if (error) return res.status(500).json({ error: error.message });
@@ -102,6 +103,7 @@ async function startServer() {
             rentals(*)
           )
         `)
+        .eq('is_deleted', false)
         .order('id', { ascending: false });
 
       if (error) return res.status(500).json({ error: error.message });
@@ -193,7 +195,8 @@ async function startServer() {
           item_code,
           image: image || null, 
           condition_note: condition_note || null,
-          status: 'verfügbar'
+          status: 'verfügbar',
+          is_deleted: false
         }])
         .select();
 
@@ -420,20 +423,30 @@ async function startServer() {
       const { id } = req.params;
 
       // 1. Check if item is in any rental_items
-      const { count, error: checkError } = await supabase
+      const { data: riData, error: checkError } = await supabase
         .from('rental_items')
-        .select('id', { count: 'exact', head: true })
+        .select('id')
         .eq('item_id', id);
 
       if (checkError) throw checkError;
       
-      if (count && count > 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Dieses Item kann nicht gelöscht werden, da es in der Verleih-Historie existiert." 
-        });
+      if (riData && riData.length > 0) {
+        // Soft delete: keep in DB for history but hide from inventory
+        const { error: updateError } = await supabase
+          .from('equipment_items')
+          .update({ 
+            is_deleted: true,
+            status: 'ausgemustert'
+          })
+          .eq('id', id);
+
+        if (updateError) throw updateError;
+        
+        console.log(`[Item Soft-Deleted]: ID ${id} (kept for history)`);
+        return res.json({ success: true, message: "Item wurde ausgemustert und aus dem Bestand entfernt. Die Historie bleibt erhalten." });
       }
 
+      // If no history, we can actually delete it
       const { error } = await supabase
         .from('equipment_items')
         .delete()
@@ -441,7 +454,7 @@ async function startServer() {
 
       if (error) throw error;
       
-      console.log(`[Item Deleted]: ID ${id}`);
+      console.log(`[Item Hard-Deleted]: ID ${id}`);
       res.json({ success: true });
     } catch (err: any) {
       console.error(`[Item Deletion Error]: ${err.message}`);

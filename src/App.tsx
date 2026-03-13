@@ -369,11 +369,16 @@ export default function App() {
   };
 
   const handleDeleteItem = (id: number) => {
+    const item = items.find(i => i.id === id);
+    const hasHistory = item && item.rental_items && item.rental_items.length > 0;
+
     setConfirmDelete({
       type: 'item',
       id,
-      title: 'Teil löschen?',
-      message: 'Möchtest du dieses Ausrüstungsteil wirklich aus dem Bestand löschen?'
+      title: hasHistory ? 'Ausmustern?' : 'Teil löschen?',
+      message: hasHistory 
+        ? 'Dieser Artikel existiert in der Historie. Er wird aus dem aktiven Bestand entfernt, die Historie bleibt erhalten.'
+        : 'Möchtest du dieses Ausrüstungsteil wirklich aus dem Bestand löschen?'
     });
   };
 
@@ -413,12 +418,15 @@ export default function App() {
     }
   };
 
-  const addToBag = (item: EquipmentItem) => {
-    if (!bag.find(i => i.id === item.id)) {
+  const toggleBag = (item: EquipmentItem) => {
+    if (bag.find(i => i.id === item.id)) {
+      setBag(bag.filter(i => i.id !== item.id));
+      setSuccess(`${item.category_label} aus der Tasche entfernt`);
+    } else {
       setBag([...bag, item]);
       setSuccess(`${item.category_label} zur Tasche hinzugefügt`);
-      setTimeout(() => setSuccess(null), 2000);
     }
+    setTimeout(() => setSuccess(null), 2000);
   };
 
   const removeFromBag = (id: number) => {
@@ -609,7 +617,7 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
             <TabButton active={currentView === 'rented'} onClick={() => setCurrentView('rented')} icon={<History className="w-4 h-4" />} label="Verliehen" />
-            <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label={`Tasche (${bag.length})`} />
+            <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
             <TabButton active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<Calendar className="w-4 h-4" />} label="Historie" />
             <TabButton active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus className="w-4 h-4" />} label="Neu" />
             <button 
@@ -759,7 +767,7 @@ export default function App() {
                               }}
                               onEdit={() => { setEditItem(item); setCurrentView('add'); }}
                               onDelete={() => handleDeleteItem(item.id)}
-                              onAddToBag={() => addToBag(item)}
+                              onToggleBag={() => toggleBag(item)}
                               inBag={bag.some(b => b.id === item.id)}
                             />
                           ))}
@@ -1219,14 +1227,14 @@ interface ItemCardProps {
   onRent: () => void;
   onDelete: () => void;
   onEdit: () => void;
-  onAddToBag: () => void;
+  onToggleBag: () => void;
   inBag: boolean;
 }
 
-const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onAddToBag, inBag }) => {
+const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onToggleBag, inBag }) => {
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/50 shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col">
-      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all z-20">
+      <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
         <button 
           onClick={(e) => { e.stopPropagation(); onEdit(); }}
           className="p-1.5 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-blue-400 rounded-lg shadow-lg border border-slate-700"
@@ -1276,14 +1284,13 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onA
         
         <div className="flex gap-1.5">
           <button
-            onClick={onAddToBag}
-            disabled={inBag}
+            onClick={onToggleBag}
             className={`flex-1 p-2 rounded-lg transition-all flex items-center justify-center ${
               inBag 
-                ? 'bg-slate-800 text-slate-600 cursor-not-allowed' 
+                ? 'bg-blue-600 text-white shadow-inner' 
                 : 'bg-blue-600/10 text-blue-400 border border-blue-500/20 hover:bg-blue-600/20'
             }`}
-            title="In Tasche"
+            title={inBag ? "Aus Tasche entfernen" : "In Tasche hinzufügen"}
           >
             {inBag ? <CheckCircle2 className="w-4 h-4" /> : <ShoppingBag className="w-4 h-4" />}
           </button>
