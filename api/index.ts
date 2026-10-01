@@ -79,7 +79,7 @@ async function startServer() {
     try {
       const supabase = getSupabase();
       const { data, error } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .select('id, item_code, category, category_label, size, brand, image')
         .eq('status', 'verfügbar')
         .eq('is_deleted', false)
@@ -96,11 +96,11 @@ async function startServer() {
     try {
       const supabase = getSupabase();
       const { data, error } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .select(`
           *,
-          rental_items(
-            rentals(*)
+          hockey_rental_items(
+            hockey_rentals(*)
           )
         `)
         .eq('is_deleted', false)
@@ -109,11 +109,12 @@ async function startServer() {
       if (error) return res.status(500).json({ error: error.message });
 
       const transformed = data.map(item => {
-        const activeRentalItem = item.rental_items?.find((ri: any) => ri.rentals && !ri.rentals.returned_at);
-        const activeRental = activeRentalItem?.rentals;
+        const activeRentalItem = (item.hockey_rental_items || item.rental_items)?.find((ri: any) => (ri.hockey_rentals || ri.rentals) && !(ri.hockey_rentals || ri.rentals).returned_at);
+        const activeRental = activeRentalItem?.hockey_rentals || activeRentalItem?.rentals;
         
         return {
           ...item,
+          rental_items: item.hockey_rental_items || item.rental_items,
           active_rental_id: activeRental?.id || null,
           verliehenAn: activeRental?.renter_name || null,
           verliehenAm: activeRental?.rented_at || null,
@@ -147,7 +148,7 @@ async function startServer() {
 
       while (!unique && attempts < 5) {
         const { data: lastItems, error: fetchError } = await supabase
-          .from('equipment_items')
+          .from('hockey_equipment_items')
           .select('item_code')
           .ilike('item_code', `${prefix}-%`)
           .order('item_code', { ascending: false })
@@ -167,7 +168,7 @@ async function startServer() {
         
         // Check if this code exists (to handle concurrent requests better)
         const { count, error: countError } = await supabase
-          .from('equipment_items')
+          .from('hockey_equipment_items')
           .select('id', { count: 'exact', head: true })
           .eq('item_code', item_code);
         
@@ -186,7 +187,7 @@ async function startServer() {
       }
 
       const { data, error } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .insert([{ 
           category,
           category_label,
@@ -219,7 +220,7 @@ async function startServer() {
       const { id } = req.params;
       const { category, category_label, size, brand, image, condition_note } = req.body;
       const { error } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .update({ 
           category,
           category_label,
@@ -255,7 +256,7 @@ async function startServer() {
 
       // 0. Verify availability of ALL items
       const { data: items, error: checkError } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .select('id, status, item_code')
         .in('id', item_ids);
 
@@ -274,7 +275,7 @@ async function startServer() {
 
       // 1. Create rental record
       const { data: rentalData, error: rentalError } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .insert([{
           renter_name,
           rented_at,
@@ -295,25 +296,25 @@ async function startServer() {
       }));
 
       const { error: riError } = await supabase
-        .from('rental_items')
+        .from('hockey_rental_items')
         .insert(rentalItems);
 
       if (riError) {
         // Rollback rental record
-        await supabase.from('rentals').delete().eq('id', rentalId);
+        await supabase.from('hockey_rentals').delete().eq('id', rentalId);
         throw riError;
       }
 
       // 3. Update items status
       const { error: itemError } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .update({ status: 'verliehen' })
         .in('id', item_ids);
 
       if (itemError) {
         // Rollback rental and rental_items
-        await supabase.from('rental_items').delete().eq('rental_id', rentalId);
-        await supabase.from('rentals').delete().eq('id', rentalId);
+        await supabase.from('hockey_rental_items').delete().eq('rental_id', rentalId);
+        await supabase.from('hockey_rentals').delete().eq('id', rentalId);
         throw itemError;
       }
       
@@ -334,7 +335,7 @@ async function startServer() {
       
       // 1. Get all items in this rental
       const { data: riData, error: riError } = await supabase
-        .from('rental_items')
+        .from('hockey_rental_items')
         .select('item_id')
         .eq('rental_id', id);
 
@@ -348,7 +349,7 @@ async function startServer() {
 
       // 2. Update items status to available
       const { error: itemError } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .update({ status: 'verfügbar' })
         .in('id', itemIds);
 
@@ -356,13 +357,13 @@ async function startServer() {
 
       // 3. Update rental record with return date
       const { error: rentalError } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .update({ returned_at })
         .eq('id', id);
 
       if (rentalError) {
         // Attempt to revert item status if rental update fails
-        await supabase.from('equipment_items').update({ status: 'verliehen' }).in('id', itemIds);
+        await supabase.from('hockey_equipment_items').update({ status: 'verliehen' }).in('id', itemIds);
         throw rentalError;
       }
       
@@ -379,7 +380,7 @@ async function startServer() {
       const supabase = getSupabase();
       const { id } = req.params;
       const { error } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .update({ paid: true })
         .eq('id', id);
 
@@ -395,11 +396,11 @@ async function startServer() {
     try {
       const supabase = getSupabase();
       const { data, error } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .select(`
           *,
-          rental_items(
-            equipment_items(*)
+          hockey_rental_items(
+            hockey_equipment_items(*)
           )
         `)
         .order('rented_at', { ascending: false });
@@ -408,7 +409,7 @@ async function startServer() {
 
       const transformed = data.map(rental => ({
         ...rental,
-        items: rental.rental_items?.map((ri: any) => ri.equipment_items) || []
+        items: (rental.hockey_rental_items || rental.rental_items)?.map((ri: any) => ri.hockey_equipment_items || ri.equipment_items) || []
       }));
 
       res.json(transformed);
@@ -424,7 +425,7 @@ async function startServer() {
 
       // 1. Check if item is in any rental_items
       const { data: riData, error: checkError } = await supabase
-        .from('rental_items')
+        .from('hockey_rental_items')
         .select('id')
         .eq('item_id', id);
 
@@ -433,7 +434,7 @@ async function startServer() {
       if (riData && riData.length > 0) {
         // Soft delete: keep in DB for history but hide from inventory
         const { error: updateError } = await supabase
-          .from('equipment_items')
+          .from('hockey_equipment_items')
           .update({ 
             is_deleted: true,
             status: 'ausgemustert'
@@ -448,7 +449,7 @@ async function startServer() {
 
       // If no history, we can actually delete it
       const { error } = await supabase
-        .from('equipment_items')
+        .from('hockey_equipment_items')
         .delete()
         .eq('id', id);
 
@@ -469,7 +470,7 @@ async function startServer() {
 
       // 1. Get all items in this rental
       const { data: riData, error: riError } = await supabase
-        .from('rental_items')
+        .from('hockey_rental_items')
         .select('item_id')
         .eq('rental_id', id);
 
@@ -479,7 +480,7 @@ async function startServer() {
 
       // 2. If rental was active (not returned), set items back to available
       const { data: rentalData, error: rentalFetchError } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .select('returned_at')
         .eq('id', id)
         .single();
@@ -488,7 +489,7 @@ async function startServer() {
 
       if (!rentalData.returned_at && itemIds.length > 0) {
         const { error: itemUpdateError } = await supabase
-          .from('equipment_items')
+          .from('hockey_equipment_items')
           .update({ status: 'verfügbar' })
           .in('id', itemIds);
         
@@ -497,7 +498,7 @@ async function startServer() {
 
       // 3. Delete rental_items (cascade delete might be set in DB, but let's be explicit if not)
       const { error: riDeleteError } = await supabase
-        .from('rental_items')
+        .from('hockey_rental_items')
         .delete()
         .eq('rental_id', id);
 
@@ -505,7 +506,7 @@ async function startServer() {
 
       // 4. Delete rental record
       const { error } = await supabase
-        .from('rentals')
+        .from('hockey_rentals')
         .delete()
         .eq('id', id);
 
