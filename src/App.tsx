@@ -92,12 +92,23 @@ export default function App() {
       i.item_code.toLowerCase().includes(s) ||
       i.brand.toLowerCase().includes(s) ||
       i.size.toLowerCase().includes(s) ||
-      i.category.toLowerCase().includes(s)
+      i.category.toLowerCase().includes(s) ||
+      (i.verliehenAn && i.verliehenAn.toLowerCase().includes(s))
     );
   };
 
-  const availableItems = filterItems(items.filter(i => i.status === 'verfügbar'));
-  const rentedItems = filterItems(items.filter(i => i.status === 'verliehen'));
+  const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
+
+  const totalCount = items.length;
+  const availableCount = items.filter(i => i.status === 'verfügbar').length;
+  const rentedCount = items.filter(i => i.status === 'verliehen').length;
+
+  const displayedItems = filterItems(
+    items.filter(item => {
+      if (statusFilter === 'all') return true;
+      return item.status === statusFilter;
+    })
+  );
 
   // Form states
   const [newItem, setNewItem] = useState<{ 
@@ -292,7 +303,7 @@ export default function App() {
         setBag([]);
         setSuccess('Equipment erfolgreich verliehen');
         fetchItems(password);
-        setCurrentView('rented');
+        setCurrentView('available');
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Verleihen');
@@ -334,7 +345,7 @@ export default function App() {
         setRentingItem(null);
         setSuccess('Equipment erfolgreich verliehen');
         fetchItems(password);
-        setCurrentView('rented');
+        setCurrentView('available');
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Verleihen');
@@ -616,7 +627,6 @@ export default function App() {
           
           <nav className="hidden md:flex items-center gap-1">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
-            <TabButton active={currentView === 'rented'} onClick={() => setCurrentView('rented')} icon={<History className="w-4 h-4" />} label="Verliehen" />
             <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
             <TabButton active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<Calendar className="w-4 h-4" />} label="Historie" />
             <TabButton active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus className="w-4 h-4" />} label="Neu" />
@@ -678,13 +688,13 @@ export default function App() {
         {/* Content Area */}
         <AnimatePresence mode="wait">
           {/* Search Bar */}
-          {(currentView === 'available' || currentView === 'rented') && (
+          {currentView === 'available' && (
             <div className="mb-6 relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input
                 type="text"
-                placeholder="Suchen nach Code, Marke, Größe oder Kategorie..."
-                className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-sm"
+                placeholder="Suchen nach Code, Marke, Größe, Kategorie oder Ausleiher..."
+                className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-sm text-slate-900"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -705,35 +715,107 @@ export default function App() {
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
-              className="space-y-10"
+              className="space-y-8"
             >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-3xl font-extrabold text-white tracking-tight">Bestand</h2>
-                  <p className="text-slate-400 mt-1">Verwalte dein Hockey-Equipment und füge Teile zur Tasche hinzu.</p>
+                  <p className="text-slate-400 mt-1">Verwalte dein gesamtes Hockey-Equipment übersichtlich an einem Ort.</p>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-2xl flex items-center gap-2">
-                    <span className="text-blue-400 font-bold text-sm uppercase tracking-wider">{availableItems.length} Verfügbar</span>
+                {bag.length > 0 && (
+                  <button 
+                    onClick={() => setCurrentView('bag')}
+                    className="self-start sm:self-auto bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+                  >
+                    <ShoppingBag className="w-4 h-4" />
+                    <span>Tasche ({bag.length})</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Status Filter Kacheln */}
+              <div className="grid grid-cols-3 gap-3 md:gap-4">
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('all')}
+                  className={`p-3.5 md:p-4 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group ${
+                    statusFilter === 'all'
+                      ? 'bg-blue-600/15 border-blue-500 text-white shadow-lg shadow-blue-500/10 ring-1 ring-blue-500/30'
+                      : 'bg-[#252936] border-slate-700/60 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className={`text-[11px] md:text-xs font-bold uppercase tracking-wider ${
+                      statusFilter === 'all' ? 'text-blue-400' : 'text-slate-400'
+                    }`}>
+                      Gesamt
+                    </span>
+                    <Package className={`w-4 h-4 ${statusFilter === 'all' ? 'text-blue-400' : 'text-slate-500'}`} />
                   </div>
-                  {bag.length > 0 && (
-                    <button 
-                      onClick={() => setCurrentView('bag')}
-                      className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-2xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
-                    >
-                      <ShoppingBag className="w-4 h-4" />
-                      <span>Tasche ({bag.length})</span>
-                    </button>
-                  )}
-                </div>
+                  <div className="text-2xl md:text-3xl font-black text-white">{totalCount}</div>
+                  <p className="text-[11px] text-slate-400 hidden sm:block mt-0.5">Alle Teile</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('verfügbar')}
+                  className={`p-3.5 md:p-4 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group ${
+                    statusFilter === 'verfügbar'
+                      ? 'bg-emerald-500/15 border-emerald-500 text-white shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/30'
+                      : 'bg-[#252936] border-slate-700/60 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className={`text-[11px] md:text-xs font-bold uppercase tracking-wider ${
+                      statusFilter === 'verfügbar' ? 'text-emerald-400' : 'text-slate-400'
+                    }`}>
+                      Verfügbar
+                    </span>
+                    <CheckCircle2 className={`w-4 h-4 ${statusFilter === 'verfügbar' ? 'text-emerald-400' : 'text-slate-500'}`} />
+                  </div>
+                  <div className="text-2xl md:text-3xl font-black text-white">{availableCount}</div>
+                  <p className="text-[11px] text-slate-400 hidden sm:block mt-0.5">Bereit zum Verleih</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('verliehen')}
+                  className={`p-3.5 md:p-4 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group ${
+                    statusFilter === 'verliehen'
+                      ? 'bg-amber-500/15 border-amber-500 text-white shadow-lg shadow-amber-500/10 ring-1 ring-amber-500/30'
+                      : 'bg-[#252936] border-slate-700/60 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className={`text-[11px] md:text-xs font-bold uppercase tracking-wider ${
+                      statusFilter === 'verliehen' ? 'text-amber-400' : 'text-slate-400'
+                    }`}>
+                      Verliehen
+                    </span>
+                    <ArrowRightLeft className={`w-4 h-4 ${statusFilter === 'verliehen' ? 'text-amber-400' : 'text-slate-500'}`} />
+                  </div>
+                  <div className="text-2xl md:text-3xl font-black text-white">{rentedCount}</div>
+                  <p className="text-[11px] text-slate-400 hidden sm:block mt-0.5">Aktuell im Einsatz</p>
+                </button>
               </div>
               
-              {availableItems.length === 0 ? (
-                <EmptyState icon={<Package className="w-12 h-12 text-slate-700" />} message="Kein Equipment im Bestand." />
+              {displayedItems.length === 0 ? (
+                <EmptyState 
+                  icon={<Package className="w-12 h-12 text-slate-700" />} 
+                  message={
+                    debouncedSearch
+                      ? "Keine passenden Ausrüstungsteile gefunden."
+                      : statusFilter === 'verliehen'
+                        ? "Aktuell ist kein Equipment verliehen."
+                        : statusFilter === 'verfügbar'
+                          ? "Aktuell ist kein Equipment verfügbar."
+                          : "Kein Equipment im Bestand."
+                  } 
+                />
               ) : (
                 <div className="space-y-12">
                   {Object.entries(
-                    availableItems.reduce((acc, item) => {
+                    displayedItems.reduce((acc, item) => {
                       const cat = item.category_label;
                       if (!acc[cat]) acc[cat] = [];
                       acc[cat].push(item);
@@ -765,6 +847,16 @@ export default function App() {
                                 setRentingItem(item);
                                 setRentForm(prev => ({ ...prev, fee_total: '' }));
                               }}
+                              onReturn={() => {
+                                if (item.active_rental_id) {
+                                  handleReturnRental(item.active_rental_id);
+                                }
+                              }}
+                              onMarkPaid={() => {
+                                if (item.active_rental_id) {
+                                  handleMarkAsPaid(item.active_rental_id);
+                                }
+                              }}
                               onEdit={() => { setEditItem(item); setCurrentView('add'); }}
                               onDelete={() => handleDeleteItem(item.id)}
                               onToggleBag={() => toggleBag(item)}
@@ -773,37 +865,6 @@ export default function App() {
                           ))}
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </motion.div>
-          )}
-
-          {currentView === 'rented' && (
-            <motion.div 
-              key="rented"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              className="space-y-6"
-            >
-              <div className="mb-2">
-                <h2 className="text-3xl font-extrabold text-white tracking-tight">Aktuell verliehen</h2>
-                <p className="text-slate-400 mt-1">Übersicht aller Teile, die gerade im Einsatz sind.</p>
-              </div>
-
-              {rentedItems.length === 0 ? (
-                <EmptyState icon={<History className="w-12 h-12 text-slate-700" />} message="Aktuell ist nichts verliehen." />
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {rentedItems.map(item => (
-                    <RentedCard 
-                      key={item.id} 
-                      item={item} 
-                      onReturn={() => handleReturnRental(item.active_rental_id!)}
-                      onMarkPaid={() => handleMarkAsPaid(item.active_rental_id!)}
-                      onDelete={() => handleDeleteHistory(item.active_rental_id!)}
-                    />
                   ))}
                 </div>
               )}
@@ -1116,7 +1177,6 @@ export default function App() {
       {/* Mobile Navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#252936] border-t border-slate-700/50 px-4 py-2 flex justify-around items-center z-40 shadow-[0_-4px_20px_rgba(0,0,0,0.2)]">
         <MobileNavItem active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package />} label="Bestand" />
-        <MobileNavItem active={currentView === 'rented'} onClick={() => setCurrentView('rented')} icon={<ArrowRightLeft />} label="Verliehen" />
         <MobileNavItem active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag />} label="Tasche" />
         <MobileNavItem active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus />} label="Neu" />
         <MobileNavItem active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History />} label="Historie" />
@@ -1225,15 +1285,31 @@ export default function App() {
 interface ItemCardProps {
   item: EquipmentItem;
   onRent: () => void;
+  onReturn?: () => void;
+  onMarkPaid?: () => void;
   onDelete: () => void;
   onEdit: () => void;
   onToggleBag: () => void;
   inBag: boolean;
 }
 
-const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onToggleBag, inBag }) => {
+const ItemCard: React.FC<ItemCardProps> = ({ 
+  item, 
+  onRent, 
+  onReturn, 
+  onMarkPaid, 
+  onDelete, 
+  onEdit, 
+  onToggleBag, 
+  inBag 
+}) => {
+  const isRented = item.status === 'verliehen';
+
   return (
-    <div className="bg-[#252936] rounded-2xl border border-slate-700/50 shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col">
+    <div className={`bg-[#252936] rounded-2xl border shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col ${
+      isRented ? 'border-amber-500/30' : 'border-slate-700/50'
+    }`}>
+      {/* Top right actions (Edit & Delete) - always visible on mobile, hover on desktop */}
       <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
         <button 
           onClick={(e) => { e.stopPropagation(); onEdit(); }}
@@ -1250,6 +1326,19 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onT
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {/* Top left status badge */}
+      <div className="absolute top-2 left-2 z-10">
+        {isRented ? (
+          <span className="bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shadow">
+            Verliehen
+          </span>
+        ) : (
+          <span className="bg-emerald-600 text-white px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shadow">
+            Verfügbar
+          </span>
+        )}
+      </div>
       
       <div className="aspect-square bg-[#1C1F2A] relative overflow-hidden">
         {item.image ? (
@@ -1264,7 +1353,7 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onT
             <ImageIcon className="w-8 h-8" />
           </div>
         )}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-2 pt-4">
           <div className="flex items-center justify-between">
             <span className="text-[14px] font-black text-white tracking-tighter">
               {item.item_code}
@@ -1279,139 +1368,62 @@ const ItemCard: React.FC<ItemCardProps> = ({ item, onRent, onDelete, onEdit, onT
       <div className="p-3 flex-grow flex flex-col justify-between">
         <div className="mb-2">
           <h3 className="font-bold text-sm text-white truncate">{item.brand}</h3>
-          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">{item.category_label}</p>
-        </div>
-        
-        <div className="flex gap-1.5">
-          <button
-            onClick={onToggleBag}
-            className={`flex-1 p-2 rounded-lg transition-all flex items-center justify-center ${
-              inBag 
-                ? 'bg-blue-600 text-white shadow-inner' 
-                : 'bg-blue-600/10 text-blue-400 border border-blue-500/20 hover:bg-blue-600/20'
-            }`}
-            title={inBag ? "Aus Tasche entfernen" : "In Tasche hinzufügen"}
-          >
-            {inBag ? <CheckCircle2 className="w-4 h-4" /> : <ShoppingBag className="w-4 h-4" />}
-          </button>
-          <button
-            onClick={onRent}
-            className="flex-[2] bg-slate-100 text-[#1C1F2A] font-bold py-2 rounded-lg hover:bg-white active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5"
-          >
-            <ArrowRightLeft className="w-3.5 h-3.5" />
-            <span>Leihen</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface RentedCardProps {
-  item: EquipmentItem;
-  onReturn: () => void;
-  onMarkPaid: () => void;
-  onDelete: () => void;
-}
-
-const RentedCard: React.FC<RentedCardProps> = ({ item, onReturn, onMarkPaid, onDelete }) => {
-  return (
-    <div className="bg-[#252936] rounded-3xl border border-orange-500/20 shadow-xl hover:shadow-2xl transition-all overflow-hidden relative group">
-      <div className="absolute top-4 right-4 flex gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
-        <button 
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="p-2 bg-[#1C1F2A]/90 backdrop-blur-md text-slate-300 hover:text-red-400 rounded-full shadow-lg border border-slate-700"
-          title="Löschen"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
-      
-      <div className="aspect-[4/3] bg-[#1C1F2A] relative overflow-hidden">
-        {item.image ? (
-          <img 
-            src={item.image} 
-            alt={item.brand} 
-            className="w-full h-full object-cover"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-slate-700">
-            <ImageIcon className="w-12 h-12" />
-          </div>
-        )}
-        <div className="absolute top-4 left-4 flex flex-col gap-2">
-          <span className="bg-[#1C1F2A]/80 backdrop-blur-md text-orange-400 px-3 py-1 rounded-full text-[10px] font-bold border border-orange-500/20 uppercase tracking-wider">
-            {item.category_label}
-          </span>
-          <span className="bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-[10px] font-bold border border-white/10 uppercase tracking-wider">
-            GRÖSSE {item.size}
-          </span>
-        </div>
-      </div>
-
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="font-bold text-lg text-white">{item.brand}</h3>
-            {item.item_code && (
-              <span className="text-[10px] font-mono text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded">
-                {item.item_code}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1 text-orange-400 text-[10px] font-bold bg-orange-500/10 px-2 py-1 rounded-md border border-orange-500/20 uppercase">
-            Verliehen
-          </div>
-        </div>
-        
-        <div className="space-y-3 mb-6">
-          <div className="flex items-center gap-2 text-sm">
-            <User className="w-4 h-4 text-slate-500" />
-            <span className="font-medium text-slate-200">{item.verliehenAn}</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <Calendar className="w-4 h-4 text-slate-500" />
-            <span className="text-slate-400">Seit {item.verliehenAm}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {item.bezahlt ? (
-                <div className="flex items-center gap-1 text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded-md border border-blue-500/20">
-                  <CheckCircle2 className="w-3 h-3" /> BEZAHLT
-                </div>
-              ) : (
-                <div className="flex items-center gap-1 text-red-400 text-xs font-bold bg-red-500/10 px-2 py-1 rounded-md border border-red-500/20">
-                  <XCircle className="w-3 h-3" /> OFFEN
-                </div>
-              )}
-            </div>
-            <div className="text-slate-300 font-bold">
-              {item.verliehenGebuehr?.toFixed(2)} €
-            </div>
-          </div>
-          
-          {!item.bezahlt && (
-            <button 
-              onClick={onMarkPaid}
-              className="w-full mt-2 py-2 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl text-xs font-bold hover:bg-blue-600/30 transition-all"
-            >
-              Jetzt als bezahlt markieren
-            </button>
+          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">{item.category_label}</p>
+          {isRented && item.verliehenAn && (
+            <p className="text-[11px] text-amber-300/90 font-medium truncate mt-1 flex items-center gap-1" title={`Verliehen an ${item.verliehenAn}`}>
+              <User className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">{item.verliehenAn}</span>
+            </p>
           )}
         </div>
-
-        <button
-          onClick={onReturn}
-          className="w-full bg-orange-500 text-white font-bold py-3 rounded-xl hover:bg-orange-400 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-lg shadow-orange-500/10"
-        >
-          <CheckCircle2 className="w-4 h-4" />
-          Zurückbekommen
-        </button>
+        
+        {isRented ? (
+          <div className="mt-1 space-y-1.5">
+            {item.active_rental_id && onReturn && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onReturn(); }}
+                className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow"
+                title="Equipment zurücknehmen"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Zurück</span>
+              </button>
+            )}
+            {!item.bezahlt && item.active_rental_id && onMarkPaid && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onMarkPaid(); }}
+                className="w-full py-1 text-[10px] font-bold text-amber-400/90 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded-md border border-amber-500/20 transition-all text-center"
+              >
+                Als bezahlt markieren
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex gap-1.5 mt-1">
+            <button
+              onClick={onToggleBag}
+              className={`flex-1 p-2 rounded-lg transition-all flex items-center justify-center ${
+                inBag 
+                  ? 'bg-blue-600 text-white shadow-inner' 
+                  : 'bg-blue-600/10 text-blue-400 border border-blue-500/20 hover:bg-blue-600/20'
+              }`}
+              title={inBag ? "Aus Tasche entfernen" : "In Tasche hinzufügen"}
+            >
+              {inBag ? <CheckCircle2 className="w-4 h-4" /> : <ShoppingBag className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={onRent}
+              className="flex-[2] bg-slate-100 text-[#1C1F2A] font-bold py-2 rounded-lg hover:bg-white active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5" />
+              <span>Leihen</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
-}
+};
 
 interface HistoryItemProps {
   rental: Rental;
