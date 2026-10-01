@@ -377,18 +377,26 @@ async function startServer() {
 
   app.patch("/api/rentals/:id/paid", authHeader, async (req, res) => {
     try {
+      const { paid } = req.body;
+      if (typeof paid !== "boolean") {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Ungültiger Wert für 'paid'. Es muss ein Boolean (true oder false) sein." 
+        });
+      }
+
       const supabase = getSupabase();
       const { id } = req.params;
       const { error } = await supabase
         .from('hockey_rentals')
-        .update({ paid: true })
+        .update({ paid })
         .eq('id', id);
 
       if (error) throw error;
-      res.json({ success: true });
+      res.json({ success: true, paid });
     } catch (err: any) {
       console.error(`[Rental Paid Update Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Markieren als bezahlt." });
+      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Zahlungsstatus." });
     }
   });
 

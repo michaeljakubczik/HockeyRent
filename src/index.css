@@ -1,14 +1,22 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+:root {
+  --wiesel-navy: #1C1F2A;
+  --wiesel-navy-hover: #262B3A;
+  --wiesel-navy-light: #F0F3F8;
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --color-brand-bg: #1C1F2A;
+  --color-wiesel-navy: #1C1F2A;
+  --color-wiesel-navy-hover: #262B3A;
+  --color-wiesel-navy-light: #F0F3F8;
 }
 
 @layer base {
   body {
-    @apply antialiased bg-brand-bg text-slate-200;
+    @apply antialiased bg-slate-50 text-slate-800;
   }
 }
