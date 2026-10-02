@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   XCircle,
   Calendar,
-  User,
   ArrowRightLeft,
   Trash2,
   Camera,
@@ -21,7 +20,9 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
-  RotateCcw
+  RotateCcw,
+  Layers,
+  ArrowRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory } from './types';
@@ -70,12 +71,15 @@ export default function App() {
   } | null>(null);
 
   const [currentView, setCurrentView] = useState<View>('available');
+  const [rentalsSubTab, setRentalsSubTab] = useState<'active' | 'completed'>('active');
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [rentingItem, setRentingItem] = useState<EquipmentItem | null>(null);
+  const [editingBundleRental, setEditingBundleRental] = useState<Rental | null>(null);
 
-  // Filter States: Status, Category, Size (Search functionality removed per spec)
+  // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sizeFilter, setSizeFilter] = useState<string>('all');
@@ -83,7 +87,7 @@ export default function App() {
   // Accordion state for inventory categories: map category name -> isCollapsed (boolean)
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
 
-  // Accordion state for history cards: map rental id -> isExpanded (boolean, default false)
+  // Accordion state for rental cards: map rental id -> isExpanded (boolean, default false)
   const [expandedRentals, setExpandedRentals] = useState<Record<number, boolean>>({});
 
   const totalCount = items.length;
@@ -151,6 +155,7 @@ export default function App() {
 
   const [editItem, setEditItem] = useState<EquipmentItem | null>(null);
 
+  // Standard-Leihgebühr: 60,00 € vorbelegt
   const [rentForm, setRentForm] = useState<{
     item_ids: number[],
     renter_name: string,
@@ -163,7 +168,7 @@ export default function App() {
     renter_name: '',
     rented_at: new Date().toISOString().split('T')[0],
     paid: false,
-    fee_total: '',
+    fee_total: '60.00',
     note: ''
   });
 
@@ -225,8 +230,15 @@ export default function App() {
         setItems(data);
       }
       if (historyRes.ok) {
-        const data = await historyRes.json();
+        const data: Rental[] = await historyRes.json();
         setHistory(data);
+        // If bundle editor is open, update its reference
+        if (editingBundleRental) {
+          const updatedRental = data.find(r => r.id === editingBundleRental.id);
+          if (updatedRental) {
+            setEditingBundleRental(updatedRental);
+          }
+        }
       }
     } catch (err) {
       setError('Fehler beim Laden der Daten');
@@ -328,7 +340,7 @@ export default function App() {
           renter_name: '', 
           rented_at: new Date().toISOString().split('T')[0], 
           paid: false, 
-          fee_total: '', 
+          fee_total: '60.00', 
           note: '' 
         });
         setBag([]);
@@ -372,7 +384,7 @@ export default function App() {
           renter_name: '', 
           rented_at: new Date().toISOString().split('T')[0], 
           paid: false, 
-          fee_total: '', 
+          fee_total: '60.00', 
           note: '' 
         });
         setRentingItem(null);
@@ -389,6 +401,7 @@ export default function App() {
     }
   };
 
+  // Alles zurückgeben (kompletter Verleihvorgang beenden)
   const handleReturnRental = async (rentalId: number) => {
     setLoading(true);
     setError(null);
@@ -398,6 +411,9 @@ export default function App() {
         headers: { 'x-admin-password': password }
       });
       if (res.ok) {
+        if (editingBundleRental?.id === rentalId) {
+          setEditingBundleRental(null);
+        }
         fetchItems(password);
       } else {
         const data: ApiResponse = await res.json();
@@ -405,6 +421,58 @@ export default function App() {
       }
     } catch (err) {
       setError('Fehler bei der Rückgabe');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Einzelnes Teil aus laufendem Bundle zurückgeben
+  const handleReturnSingleItemFromBundle = async (rentalId: number, itemId: number, note?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/items/${itemId}/return`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-password': password 
+        },
+        body: JSON.stringify({ note })
+      });
+      if (res.ok) {
+        fetchItems(password);
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler bei der Rückgabe des Einzelteils');
+      }
+    } catch (err) {
+      setError('Fehler bei der Rückgabe des Einzelteils');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Neues Teil zu laufendem Bundle hinzufügen
+  const handleAddItemToBundle = async (rentalId: number, itemId: number, note?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/items`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-password': password 
+        },
+        body: JSON.stringify({ item_id: itemId, note })
+      });
+      if (res.ok) {
+        fetchItems(password);
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler beim Hinzufügen des Teils');
+      }
+    } catch (err) {
+      setError('Fehler beim Hinzufügen des Teils');
     } finally {
       setLoading(false);
     }
@@ -420,15 +488,6 @@ export default function App() {
       message: hasHistory 
         ? 'Dieser Artikel existiert in der Historie. Er wird aus dem aktiven Bestand entfernt, die Historie bleibt erhalten.'
         : 'Möchtest du dieses Ausrüstungsteil wirklich aus dem Bestand löschen?'
-    });
-  };
-
-  const handleDeleteHistory = (id: number) => {
-    setConfirmDelete({
-      type: 'history',
-      id,
-      title: 'Eintrag löschen?',
-      message: 'Möchtest du diesen Verlaufseintrag wirklich löschen?'
     });
   };
 
@@ -574,70 +633,73 @@ export default function App() {
     return acc;
   }, {} as Record<string, EquipmentItem[]>);
 
-  // LOGGED-OUT PUBLIC VIEW (Fully aligned with dark design palette #1C1F2A / #252936)
+  // Split rentals into Aktuell (returned_at === null) and Abgeschlossen (returned_at !== null)
+  const activeRentals = history.filter(r => !r.returned_at);
+  const completedRentals = history.filter(r => !!r.returned_at);
+
+  // LOGGED-OUT PUBLIC VIEW (Deutlich kompakter gestaltet)
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen bg-[#1C1F2A] text-slate-200 font-sans">
         <header className="bg-[#181B24] border-b border-slate-800 sticky top-0 z-30 shadow-md">
-          <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center border border-blue-500/30">
-                <Package className="text-blue-400 w-5 h-5" />
+                <Package className="text-blue-400 w-4 h-4" />
               </div>
-              <h1 className="text-xl font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
+              <h1 className="text-lg font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="text-emerald-400 font-bold text-xs uppercase tracking-wider">{publicItems.length} Verfügbar</span>
             </div>
           </div>
         </header>
 
-        <main className="max-w-5xl mx-auto px-4 py-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-            <div>
-              <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Wiesel HockeyRent</h2>
-              <p className="text-slate-400 mt-1">Hier siehst du alle Ausrüstungsteile, die aktuell zur Verfügung stehen.</p>
-            </div>
-            <div className="bg-emerald-500/10 border border-emerald-500/25 px-4 py-2 rounded-2xl flex items-center gap-2 self-start md:self-auto">
-              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-              <span className="text-emerald-400 font-bold text-sm uppercase tracking-wider">{publicItems.length} Verfügbar</span>
-            </div>
+        <main className="max-w-5xl mx-auto px-4 py-6">
+          <div className="mb-6">
+            <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">Ausrüstungsübersicht</h2>
+            <p className="text-xs sm:text-sm text-slate-400 mt-0.5">Aktuell verfügbares Equipment im Bestand.</p>
           </div>
 
           {publicItems.length === 0 ? (
-            <EmptyState icon={<Package className="w-12 h-12 text-slate-500" />} message="Aktuell ist kein Equipment verfügbar." />
+            <EmptyState icon={<Package className="w-10 h-10 text-slate-500" />} message="Aktuell ist kein Equipment verfügbar." />
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            /* Kompakte, platzsparende Grid-Darstellung */
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3">
               {publicItems.map(item => (
-                <div key={item.id} className="bg-[#252936] rounded-3xl border border-slate-700/50 shadow-lg overflow-hidden group">
-                  <div className="aspect-[4/3] bg-[#181B24] relative overflow-hidden">
+                <div key={item.id} className="bg-[#252936] rounded-xl border border-slate-700/60 shadow-sm overflow-hidden flex flex-col justify-between group hover:border-slate-600 transition-all">
+                  <div className="aspect-[4/3] bg-[#181B24] relative overflow-hidden flex-shrink-0">
                     {item.image ? (
                       <img 
                         src={item.image} 
                         alt={item.brand} 
-                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         referrerPolicy="no-referrer"
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-slate-600">
-                        <ImageIcon className="w-16 h-16" />
+                        <ImageIcon className="w-6 h-6" />
                       </div>
                     )}
-                    <div className="absolute top-4 right-4">
-                      <span className="bg-[#181B24]/90 backdrop-blur-md text-white border border-slate-700 px-3 py-1 rounded-full text-xs font-bold shadow">
+                    <div className="absolute top-1.5 right-1.5">
+                      <span className="bg-[#181B24]/90 backdrop-blur-md text-white border border-slate-700/80 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold shadow-sm">
                         {item.item_code}
                       </span>
                     </div>
                   </div>
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-1">
-                      <h3 className="text-xl font-bold text-white">{item.category_label}</h3>
-                      <span className="text-xs font-semibold text-slate-400">{item.brand}</span>
+                  <div className="p-2.5 flex-1 flex flex-col justify-between">
+                    <div>
+                      <h3 className="text-xs sm:text-sm font-bold text-white truncate leading-tight">{item.category_label}</h3>
+                      <p className="text-[11px] text-slate-400 truncate mt-0.5">{item.brand}</p>
                     </div>
-                    <div className="flex items-center justify-between mt-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                        <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Verfügbar</span>
-                      </div>
-                      <span className="text-xs font-bold text-slate-300 bg-[#181B24] px-2 py-0.5 rounded-md border border-slate-700">
-                        Größe: {item.size}
+                    <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-slate-800">
+                      <span className="text-[10px] font-semibold text-emerald-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        Frei
+                      </span>
+                      <span className="text-[10px] font-bold text-slate-300 bg-[#181B24] px-1.5 py-0.5 rounded border border-slate-700">
+                        Gr. {item.size}
                       </span>
                     </div>
                   </div>
@@ -646,33 +708,30 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-16 p-8 bg-[#252936] rounded-3xl border border-slate-700/50 shadow-xl text-center">
-            <h3 className="text-xl font-bold text-white mb-2">Admin-Bereich</h3>
-            <p className="text-slate-400 mb-6 max-w-md mx-auto text-sm">
-              Um Equipment zu verleihen oder den Bestand zu verwalten, logge dich bitte mit deinem Passwort ein.
+          <div className="mt-12 p-6 bg-[#252936] rounded-2xl border border-slate-700/60 shadow-lg text-center max-w-md mx-auto">
+            <h3 className="text-lg font-bold text-white mb-1">Admin-Bereich</h3>
+            <p className="text-slate-400 mb-4 text-xs">
+              Zum Verleihen oder Verwalten des Bestands mit Passwort anmelden.
             </p>
-            <div className="max-w-xs mx-auto">
-              <form onSubmit={(e) => { e.preventDefault(); checkLogin(password); }} className="space-y-4">
-                {/* Mobile zoom safe: font-size is text-base (16px) on mobile */}
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    if (error) setError(null);
-                  }}
-                  className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                  placeholder="Passwort eingeben"
-                />
-                {error && <p className="text-red-400 text-sm font-medium">{error}</p>}
-                <button
-                  type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
-                >
-                  Anmelden
-                </button>
-              </form>
-            </div>
+            <form onSubmit={(e) => { e.preventDefault(); checkLogin(password); }} className="space-y-3">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
+                className="w-full px-4 py-2.5 rounded-xl bg-[#181B24] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                placeholder="Passwort eingeben"
+              />
+              {error && <p className="text-red-400 text-xs font-medium">{error}</p>}
+              <button
+                type="submit"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl shadow-md transition-all active:scale-95 text-sm cursor-pointer"
+              >
+                Anmelden
+              </button>
+            </form>
           </div>
         </main>
       </div>
@@ -698,7 +757,7 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1.5">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
             <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
-            <TabButton active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History className="w-4 h-4" />} label="Historie" />
+            <TabButton active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History className="w-4 h-4" />} label="Ausleihen" count={activeRentals.length} />
             <TabButton active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus className="w-4 h-4" />} label="Neu" />
             <button 
               onClick={handleLogout}
@@ -720,7 +779,7 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6 md:py-8">
-        {/* Error Messages (Keine redundanten Erfolgsmeldungen mehr) */}
+        {/* Error Messages */}
         <AnimatePresence>
           {error && (
             <motion.div 
@@ -754,7 +813,7 @@ export default function App() {
               exit={{ opacity: 0, x: 20 }}
               className="space-y-6 md:space-y-8"
             >
-              {/* 1. BESTAND Header Row */}
+              {/* BESTAND Header Row */}
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Bestand</h2>
@@ -773,7 +832,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* 2. Kompakte Bestandszahlen & Statusfilter */}
+              {/* Kompakte Bestandszahlen & Statusfilter */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
                 <button
                   type="button"
@@ -830,7 +889,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* 3. Filterleiste: Kategorie & Größe (Suchfeld entfernt, iOS-Zoom geschützt) */}
+              {/* Filterleiste: Kategorie & Größe */}
               <div className="bg-[#252936] p-3.5 md:p-4 rounded-2xl border border-slate-700/60 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 flex-1 max-w-xl">
                   {/* Kategorie Dropdown */}
@@ -840,7 +899,6 @@ export default function App() {
                       aria-label="Kategorie filtern"
                       value={categoryFilter}
                       onChange={(e) => setCategoryFilter(e.target.value)}
-                      /* text-base on mobile to avoid iOS Safari zoom, sm:text-sm on desktop */
                       className={`w-full pl-9 pr-8 py-2.5 rounded-xl border text-base sm:text-sm font-medium outline-none transition-all appearance-none cursor-pointer truncate ${
                         categoryFilter !== 'all'
                           ? 'bg-[#181B24] border-blue-500 text-blue-300 font-bold'
@@ -863,7 +921,6 @@ export default function App() {
                       aria-label="Größe filtern"
                       value={sizeFilter}
                       onChange={(e) => setSizeFilter(e.target.value)}
-                      /* text-base on mobile to avoid iOS Safari zoom, sm:text-sm on desktop */
                       className={`w-full pl-3.5 pr-8 py-2.5 rounded-xl border text-base sm:text-sm font-medium outline-none transition-all appearance-none cursor-pointer truncate ${
                         sizeFilter !== 'all'
                           ? 'bg-[#181B24] border-blue-500 text-blue-300 font-bold'
@@ -881,7 +938,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Dezent "Filter zurücksetzen" - setzt NUR Kategorie & Größe zurück, Status bleibt unverändert */}
                 {hasActiveExtraFilters && (
                   <button
                     type="button"
@@ -895,7 +951,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* 4. Equipment-Liste nach Kategorien gruppiert mit Accordion */}
+              {/* Equipment-Liste nach Kategorien gruppiert mit Accordion */}
               {displayedItems.length === 0 ? (
                 <EmptyState 
                   icon={<Package className="w-12 h-12 text-slate-500" />} 
@@ -919,7 +975,6 @@ export default function App() {
                           key={category} 
                           className="bg-[#252936] rounded-2xl border border-slate-700/60 overflow-hidden shadow-md transition-all"
                         >
-                          {/* Accordion Header (große Touch-Fläche) */}
                           <button
                             type="button"
                             onClick={() => toggleCategoryAccordion(category)}
@@ -942,7 +997,6 @@ export default function App() {
                               </span>
                             </div>
 
-                            {/* Status-Hinweis: Ausgewählte Gegenstände in der Tasche */}
                             {hasSelectedInBag && (
                               <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg flex-shrink-0">
                                 <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -958,7 +1012,6 @@ export default function App() {
                             )}
                           </button>
 
-                          {/* Accordion Body: Equipment-Karten */}
                           {!isCollapsed && (
                             <div className="p-3.5 sm:p-5 pt-1 border-t border-slate-800/80">
                               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
@@ -976,7 +1029,7 @@ export default function App() {
                                       item={item}
                                       onRent={() => {
                                         setRentingItem(item);
-                                        setRentForm(prev => ({ ...prev, fee_total: '' }));
+                                        setRentForm(prev => ({ ...prev, fee_total: prev.fee_total !== '' ? prev.fee_total : '60.00' }));
                                       }}
                                       onReturn={() => {
                                         if (item.active_rental_id) {
@@ -1075,13 +1128,12 @@ export default function App() {
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                           Name des Ausleihers
                         </label>
-                        {/* Mobile zoom safe font size: text-base sm:text-sm */}
                         <input
                           required
                           type="text"
                           value={rentForm.renter_name}
                           onChange={(e) => setRentForm({ ...rentForm, renter_name: e.target.value })}
-                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
                           placeholder="z.B. Max Mustermann"
                         />
                       </div>
@@ -1089,26 +1141,25 @@ export default function App() {
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                           Leihgebühr (€)
                         </label>
-                        {/* Mobile zoom safe font size: text-base sm:text-sm */}
+                        {/* 60 Euro Standardwert vorbelegt */}
                         <input
                           required
                           type="number"
                           step="0.50"
                           value={rentForm.fee_total}
-                          onChange={(e) => setRentForm({ ...rentForm, fee_total: parseFloat(e.target.value) })}
-                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                          placeholder="0.00"
+                          onChange={(e) => setRentForm({ ...rentForm, fee_total: e.target.value })}
+                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                          placeholder="60.00"
                         />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                           Notiz (Optional)
                         </label>
-                        {/* Mobile zoom safe font size: text-base sm:text-sm */}
                         <textarea
                           value={rentForm.note}
                           onChange={(e) => setRentForm({ ...rentForm, note: e.target.value })}
-                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all resize-none"
+                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all resize-none box-border"
                           placeholder="Zusätzliche Infos..."
                           rows={3}
                         />
@@ -1132,7 +1183,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* HISTORIE VIEW: Kompakt per Accordion */}
+          {/* AUSLEIHEN VIEW: Segmentiert in "Aktuell" und "Abgeschlossen" */}
           {currentView === 'history' && (
             <motion.div 
               key="history"
@@ -1143,10 +1194,10 @@ export default function App() {
             >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
                 <div>
-                  <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Historie</h2>
-                  <p className="text-slate-400 mt-1">Alle vergangenen und aktuellen Verleihvorgänge.</p>
+                  <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Ausleihen</h2>
+                  <p className="text-slate-400 mt-1">Laufende und abgeschlossene Verleihvorgänge.</p>
                 </div>
-                <div className="bg-[#252936] border border-slate-700/60 px-4 py-2.5 rounded-2xl shadow-md flex items-center gap-3">
+                <div className="bg-[#252936] border border-slate-700/60 px-4 py-2.5 rounded-2xl shadow-md flex items-center gap-3 self-start md:self-auto">
                   <span className="text-slate-400 text-xs sm:text-sm font-bold uppercase tracking-wider">Einnahmen:</span>
                   <span className="text-emerald-400 font-black text-lg">
                     {history.filter(r => r.paid).reduce((sum, r) => sum + r.fee_total, 0).toFixed(2)} €
@@ -1154,20 +1205,83 @@ export default function App() {
                 </div>
               </div>
 
-              {history.length === 0 ? (
-                <EmptyState icon={<Calendar className="w-12 h-12 text-slate-500" />} message="Noch keine Historie vorhanden." />
-              ) : (
+              {/* Segmented Control: Aktuell | Abgeschlossen */}
+              <div className="bg-[#181B24] p-1.5 rounded-2xl border border-slate-800 flex items-center gap-1.5 w-full sm:w-80">
+                <button
+                  type="button"
+                  onClick={() => setRentalsSubTab('active')}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    rentalsSubTab === 'active'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-[#252936]'
+                  }`}
+                >
+                  <span>Aktuell</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                    rentalsSubTab === 'active' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {activeRentals.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRentalsSubTab('completed')}
+                  className={`flex-1 py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    rentalsSubTab === 'completed'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-[#252936]'
+                  }`}
+                >
+                  <span>Abgeschlossen</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                    rentalsSubTab === 'completed' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {completedRentals.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Tab Content: Aktuell */}
+              {rentalsSubTab === 'active' && (
                 <div className="space-y-3">
-                  {history.map(rental => (
-                    <CompactHistoryCard
-                      key={rental.id}
-                      rental={rental}
-                      isExpanded={!!expandedRentals[rental.id]}
-                      onToggle={() => toggleRentalAccordion(rental.id)}
-                      onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
-                      onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Eintrag löschen?', message: 'Möchtest du diesen Verlaufseintrag wirklich löschen?' })}
-                    />
-                  ))}
+                  {activeRentals.length === 0 ? (
+                    <EmptyState icon={<Layers className="w-12 h-12 text-slate-500" />} message="Aktuell gibt es keine laufenden Ausleihen." />
+                  ) : (
+                    activeRentals.map(rental => (
+                      <ActiveRentalCard
+                        key={rental.id}
+                        rental={rental}
+                        isExpanded={!!expandedRentals[rental.id]}
+                        onToggle={() => toggleRentalAccordion(rental.id)}
+                        onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
+                        onReturnAll={() => handleReturnRental(rental.id)}
+                        onReturnSingleItem={(itemId) => handleReturnSingleItemFromBundle(rental.id, itemId)}
+                        onEditBundle={() => setEditingBundleRental(rental)}
+                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
+                      />
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* Tab Content: Abgeschlossen */}
+              {rentalsSubTab === 'completed' && (
+                <div className="space-y-3">
+                  {completedRentals.length === 0 ? (
+                    <EmptyState icon={<Calendar className="w-12 h-12 text-slate-500" />} message="Noch keine abgeschlossenen Ausleihen vorhanden." />
+                  ) : (
+                    completedRentals.map(rental => (
+                      <CompletedRentalCard
+                        key={rental.id}
+                        rental={rental}
+                        isExpanded={!!expandedRentals[rental.id]}
+                        onToggle={() => toggleRentalAccordion(rental.id)}
+                        onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
+                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Eintrag löschen?', message: 'Möchtest du diesen Verlaufseintrag wirklich löschen?' })}
+                      />
+                    ))
+                  )}
                 </div>
               )}
             </motion.div>
@@ -1203,7 +1317,6 @@ export default function App() {
                     <div className="space-y-5">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Kategorie</label>
-                        {/* Mobile zoom safe font size: text-base md:text-sm */}
                         <select
                           required
                           value={editItem ? editItem.category : newItem.category}
@@ -1213,7 +1326,7 @@ export default function App() {
                             if (editItem) setEditItem({ ...editItem, category: cat, category_label: label });
                             else setNewItem({ ...newItem, category: cat, category_label: label });
                           }}
-                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none cursor-pointer"
+                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none cursor-pointer box-border"
                         >
                           <option value="" disabled>Kategorie wählen...</option>
                           <optgroup label="Feldspieler" className="bg-[#181B24] text-white">
@@ -1232,25 +1345,23 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Marke</label>
-                          {/* Mobile zoom safe font size: text-base md:text-sm */}
                           <input
                             required
                             type="text"
                             value={editItem ? editItem.brand : newItem.brand}
                             onChange={(e) => editItem ? setEditItem({ ...editItem, brand: e.target.value }) : setNewItem({ ...newItem, brand: e.target.value })}
-                            className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                            className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
                             placeholder="z.B. Bauer"
                           />
                         </div>
                         <div>
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Größe</label>
-                          {/* Mobile zoom safe font size: text-base md:text-sm */}
                           <input
                             required
                             type="text"
                             value={editItem ? editItem.size : newItem.size}
                             onChange={(e) => editItem ? setEditItem({ ...editItem, size: e.target.value }) : setNewItem({ ...newItem, size: e.target.value })}
-                            className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                            className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
                             placeholder="z.B. L"
                           />
                         </div>
@@ -1258,11 +1369,10 @@ export default function App() {
 
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Zustand / Notiz</label>
-                        {/* Mobile zoom safe font size: text-base md:text-sm */}
                         <textarea
                           value={editItem ? (editItem.condition_note || '') : newItem.condition_note}
                           onChange={(e) => editItem ? setEditItem({ ...editItem, condition_note: e.target.value }) : setNewItem({ ...newItem, condition_note: e.target.value })}
-                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all resize-none"
+                          className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base md:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all resize-none box-border"
                           placeholder="Besonderheiten zum Zustand..."
                           rows={3}
                         />
@@ -1333,11 +1443,11 @@ export default function App() {
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#181B24] border-t border-slate-800 px-4 py-2 flex justify-around items-center z-40 shadow-2xl">
         <MobileNavItem active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package />} label="Bestand" />
         <MobileNavItem active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag />} label="Tasche" count={bag.length} />
+        <MobileNavItem active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History />} label="Ausleihen" count={activeRentals.length} />
         <MobileNavItem active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus />} label="Neu" />
-        <MobileNavItem active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History />} label="Historie" />
       </nav>
 
-      {/* Rent Modal (Single Item) */}
+      {/* Rent Modal (Single Item) - Datumsfeld Layout-Fix */}
       <AnimatePresence>
         {rentingItem && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
@@ -1345,56 +1455,52 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
-              className="bg-[#252936] w-full max-w-md rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-700/80"
+              className="bg-[#252936] w-full max-w-md rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-700/80 box-border"
             >
               <h3 className="text-xl sm:text-2xl font-bold mb-4 text-white">Equipment verleihen</h3>
-              <p className="text-xs text-slate-400 mb-6 font-mono bg-[#181B24] p-2 rounded-lg border border-slate-700">
+              <p className="text-xs text-slate-400 mb-6 font-mono bg-[#181B24] p-2.5 rounded-lg border border-slate-700">
                 {rentingItem.category_label} · {rentingItem.brand} (Größe {rentingItem.size}) · {rentingItem.item_code}
               </p>
               <form onSubmit={handleRentSingleItem} className="space-y-4">
-                <div className="w-full">
+                <div className="w-full min-w-0 max-w-full">
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Verliehen an</label>
-                  <div className="relative w-full">
-                    <User className="absolute left-3.5 top-3.5 w-5 h-5 text-slate-400 pointer-events-none" />
-                    {/* Mobile zoom safe font size: text-base sm:text-sm */}
-                    <input
-                      type="text"
-                      required
-                      autoFocus
-                      value={rentForm.renter_name}
-                      onChange={(e) => setRentForm({ ...rentForm, renter_name: e.target.value })}
-                      className="w-full pl-11 pr-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none"
-                      placeholder="Name der Person"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    value={rentForm.renter_name}
+                    onChange={(e) => setRentForm({ ...rentForm, renter_name: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none box-border"
+                    placeholder="Name der Person"
+                  />
                 </div>
 
-                <div className="w-full">
+                {/* Datumsfeld: Überbreite auf Mobile behoben (w-full min-w-0 max-w-full box-border block) */}
+                <div className="w-full min-w-0 max-w-full">
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Verliehen am</label>
-                  <div className="relative w-full">
+                  <div className="relative w-full min-w-0 max-w-full">
                     <Calendar className="absolute left-3.5 top-3.5 w-5 h-5 text-slate-400 pointer-events-none" />
-                    {/* Mobile zoom safe font size: text-base sm:text-sm */}
                     <input
                       type="date"
                       required
                       value={rentForm.rented_at}
                       onChange={(e) => setRentForm({ ...rentForm, rented_at: e.target.value })}
-                      className="w-full pl-11 pr-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="w-full min-w-0 max-w-full block box-border pl-11 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                   </div>
                 </div>
 
-                <div className="w-full">
+                <div className="w-full min-w-0 max-w-full">
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Leihgebühr (€)</label>
-                  {/* Mobile zoom safe font size: text-base sm:text-sm */}
+                  {/* 60 Euro Standardwert vorbelegt */}
                   <input
                     type="number"
                     step="0.50"
                     required
                     value={rentForm.fee_total}
                     onChange={(e) => setRentForm({ ...rentForm, fee_total: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    placeholder="0.00"
+                    className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none box-border"
+                    placeholder="60.00"
                   />
                 </div>
 
@@ -1433,6 +1539,20 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* MODAL: BUNDLE BEARBEITEN (Teile zurückgeben, Teile hinzufügen, Austausch) */}
+      <AnimatePresence>
+        {editingBundleRental && (
+          <BundleEditorModal
+            rental={editingBundleRental}
+            availableItems={items.filter(i => i.status === 'verfügbar' && !i.is_deleted)}
+            onClose={() => setEditingBundleRental(null)}
+            onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(editingBundleRental.id, itemId, note)}
+            onAddItem={(itemId, note) => handleAddItemToBundle(editingBundleRental.id, itemId, note)}
+            onReturnAll={() => handleReturnRental(editingBundleRental.id)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Delete Confirmation Modal */}
       <AnimatePresence>
         {confirmDelete && (
@@ -1449,7 +1569,7 @@ export default function App() {
   );
 }
 
-// ITEM CARD COMPONENT
+// ITEM CARD COMPONENT (Bestandsansicht)
 interface ItemCardProps {
   item: EquipmentItem;
   onRent: () => void;
@@ -1477,7 +1597,7 @@ const ItemCard: React.FC<ItemCardProps> = ({
     <div className={`bg-[#252936] rounded-2xl border shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col ${
       isRented ? 'border-amber-500/30' : inBag ? 'border-blue-500 ring-1 ring-blue-500/40' : 'border-slate-700/60'
     }`}>
-      {/* Top right actions (Edit & Delete) - visible on hover or mobile tap */}
+      {/* Top right actions (Edit & Delete) */}
       <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
         <button 
           onClick={(e) => { e.stopPropagation(); onEdit(); }}
@@ -1541,7 +1661,6 @@ const ItemCard: React.FC<ItemCardProps> = ({
           <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate">{item.category_label}</p>
           {isRented && item.verliehenAn && (
             <p className="text-[11px] text-amber-300 font-medium truncate mt-1 flex items-center gap-1" title={`Verliehen an ${item.verliehenAn}`}>
-              <User className="w-3 h-3 flex-shrink-0" />
               <span className="truncate">{item.verliehenAn}</span>
             </p>
           )}
@@ -1606,51 +1725,56 @@ const ItemCard: React.FC<ItemCardProps> = ({
   );
 };
 
-// COMPACT HISTORY CARD ACCORDION COMPONENT
-interface CompactHistoryCardProps {
+// 1. ACTIVE RENTAL CARD (Bereich "Ausleihen -> Aktuell")
+interface ActiveRentalCardProps {
   rental: Rental;
   isExpanded: boolean;
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
+  onReturnAll: () => void;
+  onReturnSingleItem: (itemId: number) => void;
+  onEditBundle: () => void;
   onDelete: () => void;
 }
 
-const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
+const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   rental,
   isExpanded,
   onToggle,
   onMarkAsPaid,
+  onReturnAll,
+  onReturnSingleItem,
+  onEditBundle,
   onDelete
 }) => {
-  const itemCount = rental.items?.length || 0;
+  const activeItems = rental.items || [];
+  const itemCount = activeItems.length;
+  const isBundle = rental.rental_type === 'bundle' || itemCount > 1;
+
+  // Filter historical exchanged items
+  const returnedHistoryItems = (rental.all_rental_items || []).filter(ri => !!ri.returned_at);
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Kompakte Kopfzeile / Zeile (immer sichtbar) */}
+      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
       <div 
         onClick={onToggle}
         className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-[#181B24] border border-slate-700 flex items-center justify-center flex-shrink-0">
-            <User className="w-4 h-4 text-blue-400" />
-          </div>
-          <div className="min-w-0">
-            <h4 className="text-sm sm:text-base font-bold text-white truncate">
-              {rental.renter_name}
-            </h4>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-              <span>{rental.rented_at}</span>
-              <span>•</span>
-              <span>{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-              <span>•</span>
-              <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
-            </div>
+        <div className="min-w-0 pr-2">
+          <h4 className="text-base sm:text-lg font-bold text-white truncate">
+            {rental.renter_name}
+          </h4>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
+            <span>seit {rental.rented_at}</span>
+            <span>•</span>
+            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
+            <span>•</span>
+            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
           </div>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {/* Status Badge */}
           {rental.paid ? (
             <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
               Bezahlt
@@ -1661,7 +1785,6 @@ const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
             </span>
           )}
 
-          {/* Chevron indicator */}
           <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
             {isExpanded ? (
               <ChevronUp className="w-4 h-4" />
@@ -1672,53 +1795,250 @@ const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
         </div>
       </div>
 
-      {/* Aufgeklappter Detailbereich (standardmäßig eingeklappt) */}
+      {/* Aufgeklappter Detailbereich für aktive Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          {/* Status- & Datumsleiste */}
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-[#181B24] p-3 rounded-xl border border-slate-700/60">
+          {/* Status- & Aktionsleiste oben */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
+            <div className="text-slate-300">
+              Ausgeliehen seit: <strong className="text-white">{rental.rented_at}</strong> · Gebühr: <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                  rental.paid 
+                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
+                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
+                }`}
+              >
+                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
+              </button>
+            </div>
+          </div>
+
+          {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"-Aktion */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Aktuell im Bundle ({activeItems.length}):
+              </p>
+              {isBundle && (
+                <button
+                  type="button"
+                  onClick={onEditBundle}
+                  className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1 hover:underline cursor-pointer"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  <span>Bundle bearbeiten</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {activeItems.map(item => (
+                <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                      {item.image ? (
+                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-600">
+                          <Package className="w-4 h-4" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
+                      <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
+                    </div>
+                  </div>
+
+                  {/* Dezente Aktion: Teil zurückgeben */}
+                  {isBundle && (
+                    <button
+                      type="button"
+                      onClick={() => onReturnSingleItem(item.id)}
+                      className="px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 rounded-lg border border-amber-500/30 transition-all flex-shrink-0 cursor-pointer"
+                      title="Dieses Teil einzeln zurücknehmen"
+                    >
+                      Teil zurück
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Austausch- & Wechsel-Historie dieses Bundles (diskrete Darstellung) */}
+          {returnedHistoryItems.length > 0 && (
+            <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-xs">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
+                Wechsel-Historie dieses Vorgangs:
+              </span>
+              <ul className="space-y-1 text-slate-300">
+                {returnedHistoryItems.map((ri, idx) => (
+                  <li key={ri.id || idx} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                    <span className="text-slate-400">{ri.returned_at}:</span>
+                    <span className="font-medium text-slate-300">{ri.item?.category_label || 'Teil'} ({ri.item?.brand} · {ri.item?.size} · {ri.item?.item_code})</span>
+                    <span className="text-amber-400/90 font-semibold">zurückgegeben</span>
+                    {ri.exchange_note && <span className="text-slate-500 italic">({ri.exchange_note})</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {rental.note && (
+            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz:</span>
+              <p className="text-xs text-slate-300 italic">"{rental.note}"</p>
+            </div>
+          )}
+
+          {/* Haupt-Aktionsleiste: Bundle bearbeiten, Alles zurückgeben, Löschen */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
+            <div className="flex flex-wrap items-center gap-2">
+              {isBundle ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={onEditBundle}
+                    className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Edit className="w-3.5 h-3.5" />
+                    <span>Bundle bearbeiten</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onReturnAll}
+                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Alles zurückgeben</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onReturnAll}
+                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Zurückgeben</span>
+                </button>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={onDelete}
+              className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              title="Ausleihe löschen"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// 2. COMPLETED RENTAL CARD (Bereich "Ausleihen -> Abgeschlossen")
+interface CompletedRentalCardProps {
+  rental: Rental;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onMarkAsPaid: (paid?: boolean) => void;
+  onDelete: () => void;
+}
+
+const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
+  rental,
+  isExpanded,
+  onToggle,
+  onMarkAsPaid,
+  onDelete
+}) => {
+  const allItems = rental.all_rental_items?.map(ri => ri.item).filter(Boolean) || rental.items || [];
+  const itemCount = allItems.length;
+
+  return (
+    <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
+      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
+      <div 
+        onClick={onToggle}
+        className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
+      >
+        <div className="min-w-0 pr-2">
+          <h4 className="text-base sm:text-lg font-bold text-white truncate">
+            {rental.renter_name}
+          </h4>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
+            <span>{rental.rented_at} bis {rental.returned_at}</span>
+            <span>•</span>
+            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
+            <span>•</span>
+            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          {rental.paid ? (
+            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
+              Bezahlt
+            </span>
+          ) : (
+            <span className="text-[10px] sm:text-xs font-bold text-red-300 bg-red-500/15 border border-red-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
+              Offen
+            </span>
+          )}
+
+          <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
+            {isExpanded ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Aufgeklappter Detailbereich */}
+      {isExpanded && (
+        <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
             <div className="flex flex-wrap items-center gap-3 text-slate-300">
               <span className="flex items-center gap-1.5">
                 <Calendar className="w-3.5 h-3.5 text-blue-400" />
                 <span>Verliehen: <strong>{rental.rented_at}</strong></span>
               </span>
-              {rental.returned_at ? (
-                <span className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Zurück: <strong>{rental.returned_at}</strong></span>
-                </span>
-              ) : (
-                <span className="text-amber-400 font-semibold">
-                  (Aktuell verliehen)
-                </span>
-              )}
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Zurück: <strong>{rental.returned_at}</strong></span>
+              </span>
             </div>
 
             <div className="flex items-center gap-2">
-              {rental.paid ? (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onMarkAsPaid(false); }}
-                  className="px-2.5 py-1 text-xs font-bold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-all cursor-pointer"
-                  title="Als offen markieren"
-                >
-                  Als offen markieren
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onMarkAsPaid(true); }}
-                  className="px-2.5 py-1 text-xs font-bold text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 rounded-lg border border-emerald-500/40 transition-all cursor-pointer"
-                  title="Als bezahlt markieren"
-                >
-                  Als bezahlt markieren
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
+                  rental.paid 
+                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
+                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
+                }`}
+              >
+                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
+              </button>
 
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                className="p-1 text-slate-400 hover:text-red-400 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                className="p-1 text-slate-500 hover:text-red-400 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
                 title="Eintrag löschen"
               >
                 <Trash2 className="w-4 h-4" />
@@ -1726,14 +2046,13 @@ const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
             </div>
           </div>
 
-          {/* Konkrete ausgeliehene Ausrüstungsteile */}
           <div>
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-              Ausgeliehene Ausrüstung ({rental.items?.length || 0}):
+              Ausgeliehene Ausrüstung ({itemCount}):
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {rental.items?.map(item => (
-                <div key={item.id} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
+              {allItems.map((item: any, idx: number) => (
+                <div key={item.id || idx} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
                   <div className="w-9 h-9 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
                     {item.image ? (
                       <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -1752,7 +2071,20 @@ const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
             </div>
           </div>
 
-          {/* Notiz falls vorhanden */}
+          {/* Dezente historische Wechselangaben */}
+          {rental.all_rental_items && rental.all_rental_items.some(ri => !!ri.returned_at) && (
+            <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-[11px] text-slate-400">
+              <span className="font-bold uppercase tracking-wider block mb-1 text-slate-500">Austausch / Verlauf:</span>
+              <ul className="space-y-0.5">
+                {rental.all_rental_items.filter(ri => !!ri.returned_at).map((ri, i) => (
+                  <li key={i}>
+                    • {ri.returned_at}: {ri.item?.category_label} ({ri.item?.item_code}) vorzeitig zurückgegeben {ri.exchange_note ? `(${ri.exchange_note})` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {rental.note && (
             <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz:</span>
@@ -1761,6 +2093,217 @@ const CompactHistoryCard: React.FC<CompactHistoryCardProps> = ({
           )}
         </div>
       )}
+    </div>
+  );
+};
+
+// 3. BUNDLE EDITOR MODAL (Teilrückgabe, Hinzufügen, Austausch)
+interface BundleEditorModalProps {
+  rental: Rental;
+  availableItems: EquipmentItem[];
+  onClose: () => void;
+  onReturnSingleItem: (itemId: number, note?: string) => Promise<void>;
+  onAddItem: (itemId: number, note?: string) => Promise<void>;
+  onReturnAll: () => Promise<void>;
+}
+
+const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
+  rental,
+  availableItems,
+  onClose,
+  onReturnSingleItem,
+  onAddItem,
+  onReturnAll
+}) => {
+  const [selectedCat, setSelectedCat] = useState<string>('all');
+  const [exchangeNote, setExchangeNote] = useState<string>('');
+  const [actionLoading, setActionLoading] = useState<boolean>(false);
+
+  const activeItems = rental.items || [];
+  const returnedHistory = (rental.all_rental_items || []).filter(ri => !!ri.returned_at);
+
+  const availableCategories = Array.from(
+    new Set<string>(availableItems.map(i => i.category_label || i.category).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, 'de'));
+
+  const filteredAvailable = availableItems.filter(i => {
+    if (selectedCat !== 'all' && (i.category_label !== selectedCat && i.category !== selectedCat)) {
+      return false;
+    }
+    return true;
+  });
+
+  const handleReturnItem = async (itemId: number) => {
+    setActionLoading(true);
+    await onReturnSingleItem(itemId, exchangeNote || 'Einzeln zurückgegeben');
+    setExchangeNote('');
+    setActionLoading(false);
+  };
+
+  const handleAddAvailable = async (itemId: number) => {
+    setActionLoading(true);
+    await onAddItem(itemId, exchangeNote || 'Ersatz / Ergänzung');
+    setExchangeNote('');
+    setActionLoading(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-[#252936] w-full max-w-2xl max-h-[90vh] rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80 flex flex-col box-border overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+          <div>
+            <h3 className="text-lg sm:text-xl font-extrabold text-white">Bundle bearbeiten</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Ausleiher: <strong className="text-blue-300">{rental.renter_name}</strong> (seit {rental.rented_at})
+            </p>
+          </div>
+          <button 
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Scrollable Content */}
+        <div className="overflow-y-auto py-4 space-y-6 flex-1 pr-1">
+          {/* 1. Aktuelle Teile im Bundle */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                1. Aktuell im Bundle ({activeItems.length} Teile)
+              </h4>
+            </div>
+
+            {activeItems.length === 0 ? (
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine Teile mehr aktiv im Bundle.</p>
+            ) : (
+              <div className="space-y-2">
+                {activeItems.map(item => (
+                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                        {item.image ? (
+                          <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-600">
+                            <Package className="w-4 h-4" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs sm:text-sm font-bold text-white truncate">{item.category_label}</p>
+                        <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={() => handleReturnItem(item.id)}
+                      className="px-3 py-1.5 text-xs font-bold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 border border-amber-500/30 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <span>Teil zurückgeben</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Verfügbares Equipment hinzufügen / austauschen */}
+          <div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                2. Neues Teil hinzufügen ({filteredAvailable.length} verfügbar)
+              </h4>
+
+              {/* Kategorie-Filter */}
+              <div className="relative w-44">
+                <select
+                  aria-label="Kategorie filtern"
+                  value={selectedCat}
+                  onChange={(e) => setSelectedCat(e.target.value)}
+                  className="w-full pl-3 pr-7 py-1.5 bg-[#181B24] border border-slate-700 rounded-lg text-xs font-medium text-slate-300 outline-none appearance-none cursor-pointer"
+                >
+                  <option value="all">Alle Kategorien</option>
+                  {availableCategories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+              </div>
+            </div>
+
+            {filteredAvailable.length === 0 ? (
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine verfügbaren Teile für diese Kategorie.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1 bg-[#181B24]/50 rounded-xl border border-slate-800">
+                {filteredAvailable.slice(0, 30).map(item => (
+                  <div key={item.id} className="bg-[#181B24] p-2.5 rounded-lg border border-slate-700/60 flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
+                      <p className="text-[10px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={() => handleAddAvailable(item.id)}
+                      className="px-2.5 py-1 text-[11px] font-bold text-blue-300 hover:text-white bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 rounded-md transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Hinzufügen</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Historischer Wechselverlauf dieses Bundles */}
+          {returnedHistory.length > 0 && (
+            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
+                Bisherige Wechsel in diesem Bundle:
+              </span>
+              <ul className="space-y-1 text-xs text-slate-300">
+                {returnedHistory.map((ri, i) => (
+                  <li key={i} className="flex items-center gap-2 text-[11px]">
+                    <span className="text-slate-500">{ri.returned_at}:</span>
+                    <span>{ri.item?.category_label} ({ri.item?.brand} · Gr. {ri.item?.size})</span>
+                    <span className="text-amber-400 font-semibold">zurückgegeben</span>
+                    {ri.exchange_note && <span className="text-slate-500 italic">"{ri.exchange_note}"</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onReturnAll}
+            className="px-3.5 py-2.5 bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 font-bold rounded-xl text-xs border border-amber-500/30 transition-all cursor-pointer"
+          >
+            Ganzes Bundle zurückgeben
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs shadow-md transition-all cursor-pointer"
+          >
+            Fertig
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 };
@@ -1793,7 +2336,7 @@ function ConfirmModal({
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="bg-[#252936] border border-slate-700 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-left"
+        className="bg-[#252936] border border-slate-700 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-left box-border"
       >
         <h3 className="text-xl font-bold text-white mb-2">{title}</h3>
         <p className="text-slate-300 mb-6 text-sm leading-relaxed">{message}</p>

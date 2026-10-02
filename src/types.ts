@@ -38,6 +38,17 @@ export interface EquipmentItem {
   rental_items?: any[];
 }
 
+export interface RentalItemRecord {
+  id?: number;
+  rental_id: number;
+  item_id: number;
+  added_at?: string | null;
+  returned_at?: string | null;
+  exchange_note?: string | null;
+  item?: EquipmentItem;
+  hockey_equipment_items?: EquipmentItem;
+}
+
 export interface Rental {
   id: number;
   renter_name: string;
@@ -49,6 +60,7 @@ export interface Rental {
   rental_type: 'single' | 'bundle';
   // Joined fields
   items?: EquipmentItem[];
+  all_rental_items?: RentalItemRecord[];
 }
 
 export type View = 'available' | 'rented' | 'add' | 'history' | 'edit' | 'bag';
