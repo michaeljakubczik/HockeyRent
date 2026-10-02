@@ -36,6 +36,7 @@ export interface EquipmentItem {
   bezahlt?: boolean;
   verliehenGebuehr?: number;
   rental_items?: any[];
+  rental_count?: number; // Berechnet aus der Anzahl historischer hockey_rental_items
 }
 
 export interface RentalItemRecord {
@@ -60,7 +61,9 @@ export interface Rental {
   rental_type: 'single' | 'bundle';
   // Joined fields
   items?: EquipmentItem[];
+  active_items?: EquipmentItem[];
+  all_items?: EquipmentItem[];
   all_rental_items?: RentalItemRecord[];
 }
 
-export type View = 'available' | 'rented' | 'add' | 'history' | 'edit' | 'bag';
+export type View = 'available' | 'rented' | 'add' | 'rentals' | 'history' | 'edit' | 'bag';

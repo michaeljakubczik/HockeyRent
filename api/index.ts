@@ -106,14 +106,20 @@ async function startServer() {
       if (error) return res.status(500).json({ error: error.message });
 
       const transformed = data.map((item: any) => {
-        const activeRentalItem = (item.hockey_rental_items || item.rental_items)?.find(
+        const rentalItemsList = (item.hockey_rental_items || item.rental_items) || [];
+        const activeRentalItem = rentalItemsList.find(
           (ri: any) => (ri.hockey_rentals || ri.rentals) && !(ri.hockey_rentals || ri.rentals).returned_at && !ri.returned_at
         );
         const activeRental = activeRentalItem?.hockey_rentals || activeRentalItem?.rentals;
         
+        // Verleihcounter pro Equipment: Wie oft wurde dieses konkrete Equipment bereits verliehen?
+        // Berechnet aus den vorhandenen historischen Daten in hockey_rental_items
+        const rentalCount = rentalItemsList.length;
+
         return {
           ...item,
-          rental_items: item.hockey_rental_items || item.rental_items,
+          rental_items: rentalItemsList,
+          rental_count: rentalCount,
           active_rental_id: activeRental?.id || null,
           verliehenAn: activeRental?.renter_name || null,
           verliehenAm: activeRental?.rented_at || null,
@@ -296,14 +302,8 @@ async function startServer() {
         .insert(rentalItems);
 
       if (riError) {
-        // Fallback without added_at if migration is pending
-        const fallback = await supabase
-          .from('hockey_rental_items')
-          .insert(item_ids.map(itemId => ({ rental_id: rentalId, item_id: itemId })));
-        if (fallback.error) {
-          await supabase.from('hockey_rentals').delete().eq('id', rentalId);
-          throw fallback.error;
-        }
+        await supabase.from('hockey_rentals').delete().eq('id', rentalId);
+        throw riError;
       }
 
       const { error: itemError } = await supabase
@@ -419,14 +419,7 @@ async function startServer() {
         .eq('item_id', itemId)
         .is('returned_at', null);
 
-      if (riError) {
-        console.warn("[Single Return Warning] Migration might be pending:", riError.message);
-        // Fallback: if returned_at column not present yet, inform clearly
-        return res.status(500).json({ 
-          success: false, 
-          message: "Datenbank-Spalte 'returned_at' fehlt. Bitte führe zuerst die SQL-Migration in Supabase aus." 
-        });
-      }
+      if (riError) throw riError;
 
       // 3. Mark the equipment item as available again
       const { error: itemError } = await supabase
@@ -436,11 +429,133 @@ async function startServer() {
 
       if (itemError) throw itemError;
 
-      console.log(`[Single Item Returned]: Item ${itemId} from Rental ${id} on ${today}`);
-      res.json({ success: true, returned_at: today });
+      // 4. Check if any active items remain in this rental; if none remain, mark rental returned
+      const { data: remainingItems, error: remError } = await supabase
+        .from('hockey_rental_items')
+        .select('id')
+        .eq('rental_id', id)
+        .is('returned_at', null);
+
+      if (remError) throw remError;
+
+      let rentalCompleted = false;
+      if (!remainingItems || remainingItems.length === 0) {
+        const { error: completeError } = await supabase
+          .from('hockey_rentals')
+          .update({ returned_at: today })
+          .eq('id', id);
+
+        if (completeError) throw completeError;
+        rentalCompleted = true;
+      }
+
+      console.log(`[Single Item Returned]: Item ${itemId} from Rental ${id} on ${today} (Rental completed: ${rentalCompleted})`);
+      res.json({ success: true, returned_at: today, rentalCompleted });
     } catch (err: any) {
       console.error(`[Single Return Error]: ${err.message}`);
       res.status(500).json({ success: false, message: "Fehler bei der Teilrückgabe." });
+    }
+  });
+
+  // Teil gegen ein anderes austauschen
+  app.post("/api/rentals/:id/exchange", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const { id } = req.params;
+    const { return_item_id, new_item_id, note } = req.body;
+
+    if (!return_item_id || !new_item_id) {
+      return res.status(400).json({ success: false, message: "Altes und neues Equipmentteil sind erforderlich." });
+    }
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+
+      // 1. Verify rental is active
+      const { data: rental, error: rentalError } = await supabase
+        .from('hockey_rentals')
+        .select('id, returned_at')
+        .eq('id', id)
+        .single();
+
+      if (rentalError || !rental) {
+        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
+      }
+      if (rental.returned_at) {
+        return res.status(400).json({ success: false, message: "Dieser Verleihvorgang ist bereits abgeschlossen." });
+      }
+
+      // 2. Fetch both equipment items for clean note description
+      const { data: itemsData, error: itemsError } = await supabase
+        .from('hockey_equipment_items')
+        .select('id, status, is_deleted, item_code, brand, size, category_label')
+        .in('id', [return_item_id, new_item_id]);
+
+      if (itemsError || !itemsData || itemsData.length < 2) {
+        return res.status(404).json({ success: false, message: "Ausrüstungsteile nicht gefunden." });
+      }
+
+      const returnItem = itemsData.find((i: any) => i.id === Number(return_item_id));
+      const newItem = itemsData.find((i: any) => i.id === Number(new_item_id));
+
+      if (!returnItem || !newItem) {
+        return res.status(404).json({ success: false, message: "Teile konnten nicht zugeordnet werden." });
+      }
+
+      if (newItem.status !== 'verfügbar' || newItem.is_deleted) {
+        return res.status(400).json({ success: false, message: `Ersatzteil ${newItem.item_code} ist aktuell nicht verfügbar.` });
+      }
+
+      const returnNote = note 
+        ? `${note} (Tausch gegen ${newItem.item_code})`
+        : `Tausch gegen ${newItem.item_code} (${newItem.brand} ${newItem.size})`;
+
+      const addNote = note 
+        ? `${note} (Ersatz für ${returnItem.item_code})`
+        : `Ersatz für ${returnItem.item_code} (${returnItem.brand} ${returnItem.size})`;
+
+      // 3. Mark old item as returned in hockey_rental_items
+      const { error: returnRiError } = await supabase
+        .from('hockey_rental_items')
+        .update({
+          returned_at: today,
+          exchange_note: returnNote
+        })
+        .eq('rental_id', id)
+        .eq('item_id', return_item_id)
+        .is('returned_at', null);
+
+      if (returnRiError) throw returnRiError;
+
+      // 4. Set old item status to 'verfügbar' in hockey_equipment_items
+      await supabase
+        .from('hockey_equipment_items')
+        .update({ status: 'verfügbar' })
+        .eq('id', return_item_id);
+
+      // 5. Insert new item in hockey_rental_items
+      const { error: addRiError } = await supabase
+        .from('hockey_rental_items')
+        .insert([{
+          rental_id: id,
+          item_id: new_item_id,
+          added_at: today,
+          returned_at: null,
+          exchange_note: addNote
+        }]);
+
+      if (addRiError) throw addRiError;
+
+      // 6. Set new item status to 'verliehen' in hockey_equipment_items
+      await supabase
+        .from('hockey_equipment_items')
+        .update({ status: 'verliehen' })
+        .eq('id', new_item_id);
+
+      console.log(`[Item Exchanged in Rental ${id}]: ${returnItem.item_code} -> ${newItem.item_code}`);
+      res.json({ success: true, message: `Teil ${returnItem.item_code} erfolgreich gegen ${newItem.item_code} getauscht.` });
+    } catch (err: any) {
+      console.error(`[Exchange Error]: ${err.message}`);
+      res.status(500).json({ success: false, message: "Fehler beim Austauschen des Equipments." });
     }
   });
 
@@ -496,14 +611,7 @@ async function startServer() {
           exchange_note: note || null
         }]);
 
-      if (riError) {
-        console.warn("[Add Item to Rental Warning] Migration might be pending:", riError.message);
-        // Fallback without added_at
-        const fallback = await supabase
-          .from('hockey_rental_items')
-          .insert([{ rental_id: id, item_id }]);
-        if (fallback.error) throw fallback.error;
-      }
+      if (riError) throw riError;
 
       // 4. Update equipment item status to 'verliehen'
       const { error: itemUpdateError } = await supabase
@@ -518,6 +626,31 @@ async function startServer() {
     } catch (err: any) {
       console.error(`[Add Item Error]: ${err.message}`);
       res.status(500).json({ success: false, message: "Fehler beim Hinzufügen des Teils." });
+    }
+  });
+
+  app.patch("/api/rentals/:id", authHeader, async (req, res) => {
+    try {
+      const { renter_name, fee_total, note, paid } = req.body;
+      const supabase = getSupabase();
+      const { id } = req.params;
+
+      const updates: any = {};
+      if (renter_name !== undefined) updates.renter_name = renter_name;
+      if (fee_total !== undefined) updates.fee_total = Number(fee_total);
+      if (note !== undefined) updates.note = note;
+      if (paid !== undefined) updates.paid = Boolean(paid);
+
+      const { error } = await supabase
+        .from('hockey_rentals')
+        .update(updates)
+        .eq('id', id);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(`[Rental Update Error]: ${err.message}`);
+      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren der Ausleihe." });
     }
   });
 
@@ -563,13 +696,42 @@ async function startServer() {
 
       if (error) return res.status(500).json({ error: error.message });
 
+      // Gather any item IDs where relation hockey_equipment_items might not have resolved directly
+      const missingItemIds = new Set<number>();
+      data.forEach((rental: any) => {
+        const rItems = (rental.hockey_rental_items || rental.rental_items) || [];
+        rItems.forEach((ri: any) => {
+          if (!ri.hockey_equipment_items && !ri.equipment_items && ri.item_id) {
+            missingItemIds.add(ri.item_id);
+          }
+        });
+      });
+
+      let itemsMap: Record<number, any> = {};
+      if (missingItemIds.size > 0) {
+        const { data: eqData } = await supabase
+          .from('hockey_equipment_items')
+          .select('*')
+          .in('id', Array.from(missingItemIds));
+        if (eqData) {
+          eqData.forEach((eq: any) => {
+            itemsMap[eq.id] = eq;
+          });
+        }
+      }
+
       const transformed = data.map((rental: any) => {
         const allRentalItems = (rental.hockey_rental_items || rental.rental_items) || [];
         
+        // All equipment items in this rental
+        const allItems = allRentalItems
+          .map((ri: any) => ri.hockey_equipment_items || ri.equipment_items || itemsMap[ri.item_id])
+          .filter(Boolean);
+
         // Active items in this rental (neither the rental is returned, nor this specific item was returned)
         const activeItems = allRentalItems
           .filter((ri: any) => !ri.returned_at)
-          .map((ri: any) => ri.hockey_equipment_items || ri.equipment_items)
+          .map((ri: any) => ri.hockey_equipment_items || ri.equipment_items || itemsMap[ri.item_id])
           .filter(Boolean);
 
         // Historical all items record with exchange/timeline metadata
@@ -580,12 +742,16 @@ async function startServer() {
           added_at: ri.added_at,
           returned_at: ri.returned_at,
           exchange_note: ri.exchange_note,
-          item: ri.hockey_equipment_items || ri.equipment_items
+          item: ri.hockey_equipment_items || ri.equipment_items || itemsMap[ri.item_id]
         }));
 
         return {
           ...rental,
-          items: activeItems,
+          // For active rentals, items = currently active items.
+          // For completed rentals, items = all items that were rented (so equipment is always visible in completed rentals!)
+          items: rental.returned_at ? allItems : activeItems,
+          active_items: activeItems,
+          all_items: allItems,
           all_rental_items: allItemsRecord
         };
       });

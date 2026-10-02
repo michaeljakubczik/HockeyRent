@@ -9,8 +9,6 @@ import {
   Calendar,
   ArrowRightLeft,
   Trash2,
-  Camera,
-  Upload,
   Image as ImageIcon,
   Edit,
   ShoppingBag,
@@ -71,6 +69,7 @@ export default function App() {
   } | null>(null);
 
   const [currentView, setCurrentView] = useState<View>('available');
+  // Segment-Umschaltung in Ausleihen: Standardmäßig "Aktuell"
   const [rentalsSubTab, setRentalsSubTab] = useState<'active' | 'completed'>('active');
 
   const [loading, setLoading] = useState(false);
@@ -78,6 +77,7 @@ export default function App() {
 
   const [rentingItem, setRentingItem] = useState<EquipmentItem | null>(null);
   const [editingBundleRental, setEditingBundleRental] = useState<Rental | null>(null);
+  const [initialExchangeItem, setInitialExchangeItem] = useState<EquipmentItem | null>(null);
 
   // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
@@ -155,20 +155,20 @@ export default function App() {
 
   const [editItem, setEditItem] = useState<EquipmentItem | null>(null);
 
-  // Standard-Leihgebühr: 60,00 € vorbelegt
+  // Standard-Leihgebühr: numerischer Initialwert 60, editierbar
   const [rentForm, setRentForm] = useState<{
     item_ids: number[],
     renter_name: string,
     rented_at: string,
     paid: boolean,
-    fee_total: string | number,
+    fee_total: number | string,
     note: string
   }>({
     item_ids: [],
     renter_name: '',
     rented_at: new Date().toISOString().split('T')[0],
     paid: false,
-    fee_total: '60.00',
+    fee_total: 60,
     note: ''
   });
 
@@ -232,11 +232,11 @@ export default function App() {
       if (historyRes.ok) {
         const data: Rental[] = await historyRes.json();
         setHistory(data);
-        // If bundle editor is open, update its reference
+        // If bundle editor modal is open, refresh its reference
         if (editingBundleRental) {
-          const updatedRental = data.find(r => r.id === editingBundleRental.id);
-          if (updatedRental) {
-            setEditingBundleRental(updatedRental);
+          const updated = data.find(r => r.id === editingBundleRental.id);
+          if (updated) {
+            setEditingBundleRental(updated);
           }
         }
       }
@@ -331,16 +331,18 @@ export default function App() {
         },
         body: JSON.stringify({
           ...rentForm,
+          fee_total: rentForm.fee_total === '' ? 0 : Number(rentForm.fee_total),
           item_ids
         })
       });
       if (res.ok) {
+        // Initialwert für den nächsten Verleih wieder auf 60 zurücksetzen
         setRentForm({ 
           item_ids: [], 
           renter_name: '', 
           rented_at: new Date().toISOString().split('T')[0], 
           paid: false, 
-          fee_total: '60.00', 
+          fee_total: 60, 
           note: '' 
         });
         setBag([]);
@@ -375,16 +377,18 @@ export default function App() {
         },
         body: JSON.stringify({
           ...rentForm,
+          fee_total: rentForm.fee_total === '' ? 0 : Number(rentForm.fee_total),
           item_ids: [rentingItem.id]
         })
       });
       if (res.ok) {
+        // Initialwert für den nächsten Verleih wieder auf 60 zurücksetzen
         setRentForm({ 
           item_ids: [], 
           renter_name: '', 
           rented_at: new Date().toISOString().split('T')[0], 
           paid: false, 
-          fee_total: '60.00', 
+          fee_total: 60, 
           note: '' 
         });
         setRentingItem(null);
@@ -478,6 +482,65 @@ export default function App() {
     }
   };
 
+  // Teil gegen ein anderes austauschen
+  const handleExchangeItemInBundle = async (rentalId: number, returnItemId: number, newItemId: number, note?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/exchange`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-password': password 
+        },
+        body: JSON.stringify({
+          return_item_id: returnItemId,
+          new_item_id: newItemId,
+          note
+        })
+      });
+      if (res.ok) {
+        fetchItems(password);
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler beim Austauschen des Ausrüstungsteils');
+      }
+    } catch (err) {
+      setError('Fehler beim Austauschen des Ausrüstungsteils');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Details einer bestehenden Ausleihe anpassen (Ausleiher, Gebühr, Notiz)
+  const handleUpdateRentalDetails = async (
+    rentalId: number, 
+    updates: { renter_name?: string; fee_total?: number; note?: string }
+  ) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
+        method: 'PATCH',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-password': password 
+        },
+        body: JSON.stringify(updates)
+      });
+      if (res.ok) {
+        fetchItems(password);
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler beim Aktualisieren der Details');
+      }
+    } catch (err) {
+      setError('Fehler beim Aktualisieren der Details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleDeleteItem = (id: number) => {
     const item = items.find(i => i.id === id);
     const hasHistory = item && item.rental_items && item.rental_items.length > 0;
@@ -486,7 +549,7 @@ export default function App() {
       id,
       title: hasHistory ? 'Ausmustern?' : 'Teil löschen?',
       message: hasHistory 
-        ? 'Dieser Artikel existiert in der Historie. Er wird aus dem aktiven Bestand entfernt, die Historie bleibt erhalten.'
+        ? 'Dieser Artikel existiert in früheren Ausleihen. Er wird aus dem aktiven Bestand entfernt, der Verlauf bleibt erhalten.'
         : 'Möchtest du dieses Ausrüstungsteil wirklich aus dem Bestand löschen?'
     });
   };
@@ -548,11 +611,14 @@ export default function App() {
     }));
   };
 
-  const toggleRentalAccordion = (rentalId: number) => {
-    setExpandedRentals(prev => ({
-      ...prev,
-      [rentalId]: !prev[rentalId]
-    }));
+  const toggleRentalAccordion = (rentalId: number, defaultState: boolean = false) => {
+    setExpandedRentals(prev => {
+      const current = prev[rentalId] !== undefined ? prev[rentalId] : defaultState;
+      return {
+        ...prev,
+        [rentalId]: !current
+      };
+    });
   };
 
   const handleMarkAsPaid = async (rentalId: number, paid: boolean = true) => {
@@ -645,7 +711,7 @@ export default function App() {
           <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center border border-blue-500/30">
-                <Package className="text-blue-400 w-4 h-4" />
+                <Package className="text-blue-400 w-5 h-5" />
               </div>
               <h1 className="text-lg font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
             </div>
@@ -665,7 +731,6 @@ export default function App() {
           {publicItems.length === 0 ? (
             <EmptyState icon={<Package className="w-10 h-10 text-slate-500" />} message="Aktuell ist kein Equipment verfügbar." />
           ) : (
-            /* Kompakte, platzsparende Grid-Darstellung */
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3">
               {publicItems.map(item => (
                 <div key={item.id} className="bg-[#252936] rounded-xl border border-slate-700/60 shadow-sm overflow-hidden flex flex-col justify-between group hover:border-slate-600 transition-all">
@@ -757,7 +822,8 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1.5">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
             <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
-            <TabButton active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History className="w-4 h-4" />} label="Ausleihen" count={activeRentals.length} />
+            {/* Sichtbare Benennung: "Ausleihen" mit Zähler der aktiven Vorgänge */}
+            <TabButton active={currentView === 'rentals' || currentView === 'history'} onClick={() => setCurrentView('rentals')} icon={<History className="w-4 h-4" />} label="Ausleihen" count={activeRentals.length} />
             <TabButton active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus className="w-4 h-4" />} label="Neu" />
             <button 
               onClick={handleLogout}
@@ -1029,11 +1095,19 @@ export default function App() {
                                       item={item}
                                       onRent={() => {
                                         setRentingItem(item);
-                                        setRentForm(prev => ({ ...prev, fee_total: prev.fee_total !== '' ? prev.fee_total : '60.00' }));
+                                        // Standard-Leihgebühr: 60 Euro
+                                        setRentForm({
+                                          item_ids: [item.id],
+                                          renter_name: '',
+                                          rented_at: new Date().toISOString().split('T')[0],
+                                          paid: false,
+                                          fee_total: 60,
+                                          note: ''
+                                        });
                                       }}
                                       onReturn={() => {
                                         if (item.active_rental_id) {
-                                          handleReturnRental(item.active_rental_id);
+                                          handleReturnSingleItemFromBundle(item.active_rental_id, item.id);
                                         }
                                       }}
                                       onMarkPaid={(paidState?: boolean) => {
@@ -1147,7 +1221,7 @@ export default function App() {
                           type="number"
                           step="0.50"
                           value={rentForm.fee_total}
-                          onChange={(e) => setRentForm({ ...rentForm, fee_total: e.target.value })}
+                          onChange={(e) => setRentForm(prev => ({ ...prev, fee_total: e.target.value === '' ? '' : Number(e.target.value) }))}
                           className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
                           placeholder="60.00"
                         />
@@ -1183,10 +1257,10 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* AUSLEIHEN VIEW: Segmentiert in "Aktuell" und "Abgeschlossen" */}
-          {currentView === 'history' && (
+          {/* AUSLEIHEN VIEW: Zentrale Verwaltung der Verleihvorgänge, segmentiert in "Aktuell" und "Abgeschlossen" */}
+          {(currentView === 'rentals' || currentView === 'history') && (
             <motion.div 
-              key="history"
+              key="rentals"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
@@ -1195,7 +1269,7 @@ export default function App() {
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
                 <div>
                   <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">Ausleihen</h2>
-                  <p className="text-slate-400 mt-1">Laufende und abgeschlossene Verleihvorgänge.</p>
+                  <p className="text-slate-400 mt-1">Laufende und abgeschlossene Verleihvorgänge verwalten.</p>
                 </div>
                 <div className="bg-[#252936] border border-slate-700/60 px-4 py-2.5 rounded-2xl shadow-md flex items-center gap-3 self-start md:self-auto">
                   <span className="text-slate-400 text-xs sm:text-sm font-bold uppercase tracking-wider">Einnahmen:</span>
@@ -1205,7 +1279,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Segmented Control: Aktuell | Abgeschlossen */}
+              {/* Segmented Control: Aktuell | Abgeschlossen (Aktuell ist Standard) */}
               <div className="bg-[#181B24] p-1.5 rounded-2xl border border-slate-800 flex items-center gap-1.5 w-full sm:w-80">
                 <button
                   type="button"
@@ -1242,22 +1316,29 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Tab Content: Aktuell */}
+              {/* Tab Content: Aktuell (Ausschließlich offene Vorgänge: returned_at IS NULL) */}
               {rentalsSubTab === 'active' && (
                 <div className="space-y-3">
                   {activeRentals.length === 0 ? (
-                    <EmptyState icon={<Layers className="w-12 h-12 text-slate-500" />} message="Aktuell gibt es keine laufenden Ausleihen." />
+                    <EmptyState icon={<Layers className="w-12 h-12 text-slate-500" />} message="Aktuell gibt es keine offenen Ausleihen." />
                   ) : (
                     activeRentals.map(rental => (
                       <ActiveRentalCard
                         key={rental.id}
                         rental={rental}
-                        isExpanded={!!expandedRentals[rental.id]}
-                        onToggle={() => toggleRentalAccordion(rental.id)}
+                        isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : true}
+                        onToggle={() => toggleRentalAccordion(rental.id, true)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
                         onReturnAll={() => handleReturnRental(rental.id)}
-                        onReturnSingleItem={(itemId) => handleReturnSingleItemFromBundle(rental.id, itemId)}
-                        onEditBundle={() => setEditingBundleRental(rental)}
+                        onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(rental.id, itemId, note)}
+                        onExchangeItem={(item) => {
+                          setEditingBundleRental(rental);
+                          setInitialExchangeItem(item);
+                        }}
+                        onEditBundle={() => {
+                          setEditingBundleRental(rental);
+                          setInitialExchangeItem(null);
+                        }}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
                       />
                     ))
@@ -1265,7 +1346,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Tab Content: Abgeschlossen */}
+              {/* Tab Content: Abgeschlossen (Ausschließlich beendete Vorgänge: returned_at IS NOT NULL) */}
               {rentalsSubTab === 'completed' && (
                 <div className="space-y-3">
                   {completedRentals.length === 0 ? (
@@ -1275,10 +1356,10 @@ export default function App() {
                       <CompletedRentalCard
                         key={rental.id}
                         rental={rental}
-                        isExpanded={!!expandedRentals[rental.id]}
-                        onToggle={() => toggleRentalAccordion(rental.id)}
+                        isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : false}
+                        onToggle={() => toggleRentalAccordion(rental.id, false)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
-                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Eintrag löschen?', message: 'Möchtest du diesen Verlaufseintrag wirklich löschen?' })}
+                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
                       />
                     ))
                   )}
@@ -1443,7 +1524,7 @@ export default function App() {
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#181B24] border-t border-slate-800 px-4 py-2 flex justify-around items-center z-40 shadow-2xl">
         <MobileNavItem active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package />} label="Bestand" />
         <MobileNavItem active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag />} label="Tasche" count={bag.length} />
-        <MobileNavItem active={currentView === 'history'} onClick={() => setCurrentView('history')} icon={<History />} label="Ausleihen" count={activeRentals.length} />
+        <MobileNavItem active={currentView === 'rentals' || currentView === 'history'} onClick={() => setCurrentView('rentals')} icon={<History />} label="Ausleihen" count={activeRentals.length} />
         <MobileNavItem active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus />} label="Neu" />
       </nav>
 
@@ -1498,7 +1579,7 @@ export default function App() {
                     step="0.50"
                     required
                     value={rentForm.fee_total}
-                    onChange={(e) => setRentForm({ ...rentForm, fee_total: e.target.value })}
+                    onChange={(e) => setRentForm(prev => ({ ...prev, fee_total: e.target.value === '' ? '' : Number(e.target.value) }))}
                     className="w-full px-4 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none box-border"
                     placeholder="60.00"
                   />
@@ -1544,10 +1625,16 @@ export default function App() {
         {editingBundleRental && (
           <BundleEditorModal
             rental={editingBundleRental}
+            initialExchangeItem={initialExchangeItem}
             availableItems={items.filter(i => i.status === 'verfügbar' && !i.is_deleted)}
-            onClose={() => setEditingBundleRental(null)}
+            onClose={() => {
+              setEditingBundleRental(null);
+              setInitialExchangeItem(null);
+            }}
             onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(editingBundleRental.id, itemId, note)}
             onAddItem={(itemId, note) => handleAddItemToBundle(editingBundleRental.id, itemId, note)}
+            onExchangeItem={(returnItemId, newItemId, note) => handleExchangeItemInBundle(editingBundleRental.id, returnItemId, newItemId, note)}
+            onUpdateRentalDetails={(updates) => handleUpdateRentalDetails(editingBundleRental.id, updates)}
             onReturnAll={() => handleReturnRental(editingBundleRental.id)}
           />
         )}
@@ -1658,7 +1745,20 @@ const ItemCard: React.FC<ItemCardProps> = ({
       <div className="p-3 flex-grow flex flex-col justify-between">
         <div className="mb-2">
           <h3 className="font-bold text-sm text-white truncate">{item.brand}</h3>
-          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate">{item.category_label}</p>
+          
+          {/* Kategorie und Verleihcounter pro Equipment (nur interne Verwaltung, dezent) */}
+          <div className="flex items-center justify-between gap-1 mt-0.5">
+            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate">{item.category_label}</p>
+            {item.rental_count !== undefined && (
+              <span 
+                className="text-[10px] font-semibold text-slate-400 bg-[#181B24] px-1.5 py-0.5 rounded border border-slate-700/80 flex-shrink-0"
+                title={`${item.rental_count || 0}× bisher verliehen (berechnet aus hockey_rental_items)`}
+              >
+                {item.rental_count || 0}× verliehen
+              </span>
+            )}
+          </div>
+
           {isRented && item.verliehenAn && (
             <p className="text-[11px] text-amber-300 font-medium truncate mt-1 flex items-center gap-1" title={`Verliehen an ${item.verliehenAn}`}>
               <span className="truncate">{item.verliehenAn}</span>
@@ -1732,7 +1832,8 @@ interface ActiveRentalCardProps {
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
   onReturnAll: () => void;
-  onReturnSingleItem: (itemId: number) => void;
+  onReturnSingleItem: (itemId: number, note?: string) => void;
+  onExchangeItem: (item: EquipmentItem) => void;
   onEditBundle: () => void;
   onDelete: () => void;
 }
@@ -1744,14 +1845,14 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   onMarkAsPaid,
   onReturnAll,
   onReturnSingleItem,
+  onExchangeItem,
   onEditBundle,
   onDelete
 }) => {
   const activeItems = rental.items || [];
   const itemCount = activeItems.length;
-  const isBundle = rental.rental_type === 'bundle' || itemCount > 1;
 
-  // Filter historical exchanged items
+  // Historisch ausgetauschte oder einzeln zurückgegebene Teile dieses Vorgangs
   const returnedHistoryItems = (rental.all_rental_items || []).filter(ri => !!ri.returned_at);
 
   return (
@@ -1818,71 +1919,82 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             </div>
           </div>
 
-          {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"-Aktion */}
+          {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"- & "Tauschen"-Aktion */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                Aktuell im Bundle ({activeItems.length}):
+                Aktuell ausgeliehenes Equipment ({activeItems.length}):
               </p>
-              {isBundle && (
-                <button
-                  type="button"
-                  onClick={onEditBundle}
-                  className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1 hover:underline cursor-pointer"
-                >
-                  <Edit className="w-3.5 h-3.5" />
-                  <span>Bundle bearbeiten</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={onEditBundle}
+                className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 hover:underline cursor-pointer"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Bundle bearbeiten / Erweitern</span>
+              </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {activeItems.map(item => (
-                <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                      {item.image ? (
-                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-slate-600">
-                          <Package className="w-4 h-4" />
-                        </div>
-                      )}
+            {activeItems.length === 0 ? (
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine aktiven Teile mehr in diesem Vorgang.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {activeItems.map(item => (
+                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                        {item.image ? (
+                          <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-600">
+                            <Package className="w-4 h-4" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
+                        <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
-                      <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
+
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onExchangeItem(item)}
+                        className="px-2 py-1 text-[11px] font-semibold text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                        title="Dieses Teil austauschen"
+                      >
+                        <ArrowRightLeft className="w-3 h-3" />
+                        <span>Tauschen</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onReturnSingleItem(item.id)}
+                        className="px-2 py-1 text-[11px] font-semibold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 rounded-lg border border-amber-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                        title="Dieses Teil einzeln zurücknehmen"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>Zurück</span>
+                      </button>
                     </div>
                   </div>
-
-                  {/* Dezente Aktion: Teil zurückgeben */}
-                  {isBundle && (
-                    <button
-                      type="button"
-                      onClick={() => onReturnSingleItem(item.id)}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 rounded-lg border border-amber-500/30 transition-all flex-shrink-0 cursor-pointer"
-                      title="Dieses Teil einzeln zurücknehmen"
-                    >
-                      Teil zurück
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Austausch- & Wechsel-Historie dieses Bundles (diskrete Darstellung) */}
+          {/* Austausch- & Wechsel-Historie dieses Bundles (diskrete Randinformation) */}
           {returnedHistoryItems.length > 0 && (
             <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-xs">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                Wechsel-Historie dieses Vorgangs:
+                Bisherige Wechsel in diesem Vorgang:
               </span>
               <ul className="space-y-1 text-slate-300">
                 {returnedHistoryItems.map((ri, idx) => (
                   <li key={ri.id || idx} className="flex items-center gap-2 text-[11px]">
                     <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
                     <span className="text-slate-400">{ri.returned_at}:</span>
-                    <span className="font-medium text-slate-300">{ri.item?.category_label || 'Teil'} ({ri.item?.brand} · {ri.item?.size} · {ri.item?.item_code})</span>
+                    <span className="font-medium text-slate-300">{ri.item?.category_label || 'Teil'} ({ri.item?.brand} · Gr. {ri.item?.size} · {ri.item?.item_code})</span>
                     <span className="text-amber-400/90 font-semibold">zurückgegeben</span>
                     {ri.exchange_note && <span className="text-slate-500 italic">({ri.exchange_note})</span>}
                   </li>
@@ -1901,35 +2013,22 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
           {/* Haupt-Aktionsleiste: Bundle bearbeiten, Alles zurückgeben, Löschen */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
             <div className="flex flex-wrap items-center gap-2">
-              {isBundle ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={onEditBundle}
-                    className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                    <span>Bundle bearbeiten</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onReturnAll}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Alles zurückgeben</span>
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onReturnAll}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Zurückgeben</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={onEditBundle}
+                className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Bundle bearbeiten / Erweitern</span>
+              </button>
+              <button
+                type="button"
+                onClick={onReturnAll}
+                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Alles zurückgeben</span>
+              </button>
             </div>
 
             <button
@@ -1963,7 +2062,8 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   onMarkAsPaid,
   onDelete
 }) => {
-  const allItems = rental.all_rental_items?.map(ri => ri.item).filter(Boolean) || rental.items || [];
+  // Für abgeschlossene Ausleihen: Immer alle historischen Teile anzeigen
+  const allItems = rental.all_items || rental.items || rental.all_rental_items?.map(ri => ri.item).filter((i): i is EquipmentItem => Boolean(i)) || [];
   const itemCount = allItems.length;
 
   return (
@@ -2007,7 +2107,7 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
         </div>
       </div>
 
-      {/* Aufgeklappter Detailbereich */}
+      {/* Aufgeklappter Detailbereich für abgeschlossene Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
@@ -2046,39 +2146,44 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
             </div>
           </div>
 
+          {/* Verliehene Ausrüstungsteile (dauerhaft sichtbar in abgeschlossenen Vorgängen) */}
           <div>
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
               Ausgeliehene Ausrüstung ({itemCount}):
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {allItems.map((item: any, idx: number) => (
-                <div key={item.id || idx} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
-                  <div className="w-9 h-9 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                    {item.image ? (
-                      <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-slate-600">
-                        <Package className="w-4 h-4" />
-                      </div>
-                    )}
+            {allItems.length === 0 ? (
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine Teile hinterlegt.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {allItems.map((item: any, idx: number) => (
+                  <div key={item.id || idx} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
+                    <div className="w-9 h-9 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                      {item.image ? (
+                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-600">
+                          <Package className="w-4 h-4" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-white truncate">{item.category_label || item.category}</p>
+                      <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
+                    </div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
-                    <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Dezente historische Wechselangaben */}
+          {/* Dezente historische Wechselangaben als Randinformation */}
           {rental.all_rental_items && rental.all_rental_items.some(ri => !!ri.returned_at) && (
             <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-[11px] text-slate-400">
               <span className="font-bold uppercase tracking-wider block mb-1 text-slate-500">Austausch / Verlauf:</span>
               <ul className="space-y-0.5">
                 {rental.all_rental_items.filter(ri => !!ri.returned_at).map((ri, i) => (
                   <li key={i}>
-                    • {ri.returned_at}: {ri.item?.category_label} ({ri.item?.item_code}) vorzeitig zurückgegeben {ri.exchange_note ? `(${ri.exchange_note})` : ''}
+                    • {ri.returned_at}: {ri.item?.category_label || 'Teil'} ({ri.item?.item_code || ''}) vorzeitig zurückgegeben {ri.exchange_note ? `(${ri.exchange_note})` : ''}
                   </li>
                 ))}
               </ul>
@@ -2097,26 +2202,51 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   );
 };
 
-// 3. BUNDLE EDITOR MODAL (Teilrückgabe, Hinzufügen, Austausch)
+// 3. BUNDLE EDITOR MODAL (Teilrückgabe, Hinzufügen, Austausch, Details)
 interface BundleEditorModalProps {
   rental: Rental;
+  initialExchangeItem?: EquipmentItem | null;
   availableItems: EquipmentItem[];
   onClose: () => void;
   onReturnSingleItem: (itemId: number, note?: string) => Promise<void>;
   onAddItem: (itemId: number, note?: string) => Promise<void>;
+  onExchangeItem: (returnItemId: number, newItemId: number, note?: string) => Promise<void>;
+  onUpdateRentalDetails?: (updates: { renter_name?: string; fee_total?: number; note?: string }) => Promise<void>;
   onReturnAll: () => Promise<void>;
 }
 
 const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
   rental,
+  initialExchangeItem,
   availableItems,
   onClose,
   onReturnSingleItem,
   onAddItem,
+  onExchangeItem,
+  onUpdateRentalDetails,
   onReturnAll
 }) => {
-  const [selectedCat, setSelectedCat] = useState<string>('all');
+  // Exchange state
+  const [exchangeItem, setExchangeItem] = useState<EquipmentItem | null>(initialExchangeItem || null);
+  const [exchangeCategory, setExchangeCategory] = useState<string>(
+    initialExchangeItem ? (initialExchangeItem.category_label || initialExchangeItem.category) : 'all'
+  );
   const [exchangeNote, setExchangeNote] = useState<string>('');
+
+  // Single return state (with optional note prompt)
+  const [returnItemPromptId, setReturnItemPromptId] = useState<number | null>(null);
+  const [singleReturnNote, setSingleReturnNote] = useState<string>('');
+
+  // Add new item state
+  const [addCategory, setAddCategory] = useState<string>('all');
+  const [addNote, setAddNote] = useState<string>('');
+
+  // Edit rental details state
+  const [showEditDetails, setShowEditDetails] = useState<boolean>(false);
+  const [editRenterName, setEditRenterName] = useState<string>(rental.renter_name);
+  const [editFee, setEditFee] = useState<number | string>(rental.fee_total);
+  const [editRentalNote, setEditRentalNote] = useState<string>(rental.note || '');
+
   const [actionLoading, setActionLoading] = useState<boolean>(false);
 
   const activeItems = rental.items || [];
@@ -2126,24 +2256,56 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
     new Set<string>(availableItems.map(i => i.category_label || i.category).filter(Boolean))
   ).sort((a, b) => a.localeCompare(b, 'de'));
 
-  const filteredAvailable = availableItems.filter(i => {
-    if (selectedCat !== 'all' && (i.category_label !== selectedCat && i.category !== selectedCat)) {
+  // Items for exchange filter
+  const exchangeAvailableItems = availableItems.filter(i => {
+    if (exchangeCategory !== 'all' && (i.category_label !== exchangeCategory && i.category !== exchangeCategory)) {
       return false;
     }
     return true;
   });
 
-  const handleReturnItem = async (itemId: number) => {
+  // Items for add filter
+  const addAvailableItems = availableItems.filter(i => {
+    if (addCategory !== 'all' && (i.category_label !== addCategory && i.category !== addCategory)) {
+      return false;
+    }
+    return true;
+  });
+
+  const handleExecuteSingleReturn = async (itemId: number) => {
     setActionLoading(true);
-    await onReturnSingleItem(itemId, exchangeNote || 'Einzeln zurückgegeben');
+    await onReturnSingleItem(itemId, singleReturnNote.trim() || undefined);
+    setReturnItemPromptId(null);
+    setSingleReturnNote('');
+    setActionLoading(false);
+  };
+
+  const handleExecuteExchange = async (newItemId: number) => {
+    if (!exchangeItem) return;
+    setActionLoading(true);
+    await onExchangeItem(exchangeItem.id, newItemId, exchangeNote.trim() || undefined);
+    setExchangeItem(null);
     setExchangeNote('');
     setActionLoading(false);
   };
 
-  const handleAddAvailable = async (itemId: number) => {
+  const handleExecuteAddItem = async (itemId: number) => {
     setActionLoading(true);
-    await onAddItem(itemId, exchangeNote || 'Ersatz / Ergänzung');
-    setExchangeNote('');
+    await onAddItem(itemId, addNote.trim() || undefined);
+    setAddNote('');
+    setActionLoading(false);
+  };
+
+  const handleSaveDetails = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onUpdateRentalDetails) return;
+    setActionLoading(true);
+    await onUpdateRentalDetails({
+      renter_name: editRenterName.trim() || rental.renter_name,
+      fee_total: editFee === '' ? 0 : Number(editFee),
+      note: editRentalNote.trim() || undefined
+    });
+    setShowEditDetails(false);
     setActionLoading(false);
   };
 
@@ -2153,14 +2315,19 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-[#252936] w-full max-w-2xl max-h-[90vh] rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80 flex flex-col box-border overflow-hidden"
+        className="bg-[#252936] w-full max-w-2xl max-h-[92vh] rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80 flex flex-col box-border overflow-hidden"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-800 flex-shrink-0">
           <div>
-            <h3 className="text-lg sm:text-xl font-extrabold text-white">Bundle bearbeiten</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg sm:text-xl font-extrabold text-white">Bundle bearbeiten</h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                {activeItems.length} aktiv
+              </span>
+            </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Ausleiher: <strong className="text-blue-300">{rental.renter_name}</strong> (seit {rental.rented_at})
+              Ausleiher: <strong className="text-white">{rental.renter_name}</strong> (seit {rental.rented_at} · Gebühr: <strong className="text-emerald-400">{rental.fee_total.toFixed(2)} €</strong>)
             </p>
           </div>
           <button 
@@ -2173,63 +2340,268 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="overflow-y-auto py-4 space-y-6 flex-1 pr-1">
+          {/* MODUS: TEIL AUSTAUSCHEN (wenn ein Teil aktiv zum Tausch ausgewählt ist) */}
+          {exchangeItem && (
+            <div className="bg-[#181B24] border-2 border-blue-500/60 rounded-2xl p-4 space-y-3.5 shadow-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-bold text-blue-300">
+                  <ArrowRightLeft className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                  <span>Teil austauschen:</span>
+                  <span className="text-white bg-[#252936] px-2 py-0.5 rounded-md border border-slate-700 text-xs font-mono">
+                    {exchangeItem.category_label} · {exchangeItem.brand} (Gr. {exchangeItem.size}) · {exchangeItem.item_code}
+                  </span>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setExchangeItem(null)} 
+                  className="text-slate-400 hover:text-white text-xs underline cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 ml-0.5">
+                  Grund / Notiz zum Tausch (optional)
+                </label>
+                <input 
+                  type="text"
+                  value={exchangeNote}
+                  onChange={(e) => setExchangeNote(e.target.value)}
+                  placeholder="z.B. Größe M zu klein, Wechsel auf Gr. L"
+                  className="w-full px-3.5 py-2.5 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:ring-1 focus:ring-blue-500 box-border"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-slate-300">
+                    Ersatzteil auswählen ({exchangeAvailableItems.length} verfügbar):
+                  </span>
+                  <div className="relative w-44">
+                    <select
+                      value={exchangeCategory}
+                      onChange={(e) => setExchangeCategory(e.target.value)}
+                      className="w-full pl-2.5 pr-7 py-1 bg-[#252936] border border-slate-700 rounded-lg text-xs font-medium text-slate-200 outline-none appearance-none cursor-pointer"
+                    >
+                      <option value="all">Alle Kategorien</option>
+                      {availableCategories.map(cat => (
+                        <option key={cat} value={cat}>{cat}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
+                  </div>
+                </div>
+
+                {exchangeAvailableItems.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic p-4 bg-[#252936] rounded-xl text-center">
+                    Keine verfügbaren Teile in dieser Kategorie.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 bg-[#252936]/50 rounded-xl border border-slate-800">
+                    {exchangeAvailableItems.map(item => (
+                      <div key={item.id} className="bg-[#252936] p-2.5 rounded-xl border border-slate-700/60 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => handleExecuteExchange(item.id)}
+                          className="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-all shadow cursor-pointer disabled:opacity-50 flex-shrink-0"
+                        >
+                          Tauschen
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* 1. Aktuelle Teile im Bundle */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
                 1. Aktuell im Bundle ({activeItems.length} Teile)
               </h4>
+              <button
+                type="button"
+                onClick={() => setShowEditDetails(!showEditDetails)}
+                className="text-xs text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
+              >
+                {showEditDetails ? 'Details ausblenden' : 'Ausleiher / Gebühr anpassen'}
+              </button>
             </div>
 
+            {/* Optionaler Bereich: Ausleih-Details anpassen */}
+            {showEditDetails && (
+              <form onSubmit={handleSaveDetails} className="bg-[#181B24] p-3.5 rounded-2xl border border-slate-700/60 mb-3 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Ausleiher Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={editRenterName}
+                      onChange={(e) => setEditRenterName(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 box-border"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Leihgebühr (€)</label>
+                    <input
+                      type="number"
+                      step="0.50"
+                      required
+                      value={editFee}
+                      onChange={(e) => setEditFee(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 box-border"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Notiz</label>
+                  <input
+                    type="text"
+                    value={editRentalNote}
+                    onChange={(e) => setEditRentalNote(e.target.value)}
+                    placeholder="Zusätzliche Notizen..."
+                    className="w-full px-3 py-2 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 box-border"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditDetails(false)}
+                    className="px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    Abbrechen
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={actionLoading}
+                    className="px-4 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Speichern
+                  </button>
+                </div>
+              </form>
+            )}
+
             {activeItems.length === 0 ? (
-              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine Teile mehr aktiv im Bundle.</p>
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-4 rounded-xl text-center">
+                Keine Teile mehr aktiv im Bundle.
+              </p>
             ) : (
               <div className="space-y-2">
                 {activeItems.map(item => (
-                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                        {item.image ? (
-                          <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-slate-600">
-                            <Package className="w-4 h-4" />
-                          </div>
-                        )}
+                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                          {item.image ? (
+                            <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-slate-600">
+                              <Package className="w-4 h-4" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs sm:text-sm font-bold text-white truncate">{item.category_label}</p>
+                          <p className="text-[11px] text-slate-400 truncate">
+                            {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
+                          </p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-xs sm:text-sm font-bold text-white truncate">{item.category_label}</p>
-                        <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
+
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => {
+                            setExchangeItem(item);
+                            setExchangeCategory(item.category_label || item.category);
+                            setExchangeNote('');
+                          }}
+                          className="px-2.5 py-1.5 text-xs font-bold text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          title="Gegen ein anderes Teil austauschen"
+                        >
+                          <ArrowRightLeft className="w-3.5 h-3.5" />
+                          <span>Tauschen</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => {
+                            if (returnItemPromptId === item.id) {
+                              setReturnItemPromptId(null);
+                            } else {
+                              setReturnItemPromptId(item.id);
+                              setSingleReturnNote('');
+                            }
+                          }}
+                          className="px-2.5 py-1.5 text-xs font-bold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 border border-amber-500/30 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          title="Dieses Teil zurückgeben"
+                        >
+                          <span>Teil zurück</span>
+                        </button>
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={actionLoading}
-                      onClick={() => handleReturnItem(item.id)}
-                      className="px-3 py-1.5 text-xs font-bold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 border border-amber-500/30 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                    >
-                      <span>Teil zurückgeben</span>
-                    </button>
+                    {/* Inline-Eingabe für Notiz bei Einzelrückgabe */}
+                    {returnItemPromptId === item.id && (
+                      <div className="pt-2 border-t border-slate-800 flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={singleReturnNote}
+                          onChange={(e) => setSingleReturnNote(e.target.value)}
+                          placeholder="Rückgabe-Notiz (optional, z.B. nicht benötigt)"
+                          className="flex-1 px-3 py-1.5 bg-[#252936] border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 outline-none focus:ring-1 focus:ring-amber-500 box-border"
+                        />
+                        <button
+                          type="button"
+                          disabled={actionLoading}
+                          onClick={() => handleExecuteSingleReturn(item.id)}
+                          className="px-3 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-all shadow cursor-pointer disabled:opacity-50"
+                        >
+                          Bestätigen
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReturnItemPromptId(null)}
+                          className="px-2.5 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </div>
 
-          {/* 2. Verfügbares Equipment hinzufügen / austauschen */}
+          {/* 2. Verfügbares Equipment hinzufügen */}
           <div>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                2. Neues Teil hinzufügen ({filteredAvailable.length} verfügbar)
+                2. Weiteres Teil hinzufügen ({addAvailableItems.length} verfügbar)
               </h4>
 
               {/* Kategorie-Filter */}
               <div className="relative w-44">
                 <select
                   aria-label="Kategorie filtern"
-                  value={selectedCat}
-                  onChange={(e) => setSelectedCat(e.target.value)}
+                  value={addCategory}
+                  onChange={(e) => setAddCategory(e.target.value)}
                   className="w-full pl-3 pr-7 py-1.5 bg-[#181B24] border border-slate-700 rounded-lg text-xs font-medium text-slate-300 outline-none appearance-none cursor-pointer"
                 >
                   <option value="all">Alle Kategorien</option>
@@ -2241,11 +2613,23 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
               </div>
             </div>
 
-            {filteredAvailable.length === 0 ? (
-              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine verfügbaren Teile für diese Kategorie.</p>
+            <div className="mb-2">
+              <input
+                type="text"
+                value={addNote}
+                onChange={(e) => setAddNote(e.target.value)}
+                placeholder="Notiz zum neuen Teil (optional, z.B. nachträgliche Ergänzung)"
+                className="w-full px-3 py-2 bg-[#181B24] border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:ring-1 focus:ring-blue-500 box-border"
+              />
+            </div>
+
+            {addAvailableItems.length === 0 ? (
+              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl text-center">
+                Keine verfügbaren Teile für diese Kategorie.
+              </p>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1 bg-[#181B24]/50 rounded-xl border border-slate-800">
-                {filteredAvailable.slice(0, 30).map(item => (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 bg-[#181B24]/50 rounded-xl border border-slate-800">
+                {addAvailableItems.slice(0, 30).map(item => (
                   <div key={item.id} className="bg-[#181B24] p-2.5 rounded-lg border border-slate-700/60 flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
@@ -2254,7 +2638,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                     <button
                       type="button"
                       disabled={actionLoading}
-                      onClick={() => handleAddAvailable(item.id)}
+                      onClick={() => handleExecuteAddItem(item.id)}
                       className="px-2.5 py-1 text-[11px] font-bold text-blue-300 hover:text-white bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 rounded-md transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
                     >
                       <Plus className="w-3 h-3" />
@@ -2268,17 +2652,19 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 
           {/* 3. Historischer Wechselverlauf dieses Bundles */}
           {returnedHistory.length > 0 && (
-            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
-                Bisherige Wechsel in diesem Bundle:
+            <div className="p-3.5 bg-[#181B24] rounded-2xl border border-slate-700/60">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+                Bisherige Wechsel & Rückgaben in diesem Vorgang:
               </span>
-              <ul className="space-y-1 text-xs text-slate-300">
+              <ul className="space-y-1.5 text-xs text-slate-300">
                 {returnedHistory.map((ri, i) => (
-                  <li key={i} className="flex items-center gap-2 text-[11px]">
-                    <span className="text-slate-500">{ri.returned_at}:</span>
-                    <span>{ri.item?.category_label} ({ri.item?.brand} · Gr. {ri.item?.size})</span>
+                  <li key={i} className="flex items-center gap-2 text-[11px] flex-wrap">
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-500 flex-shrink-0"></span>
+                    <span className="text-slate-400">{ri.returned_at}:</span>
+                    <span className="font-medium text-white">{ri.item?.category_label || 'Teil'}</span>
+                    <span className="text-slate-400">({ri.item?.brand} · Gr. {ri.item?.size} · {ri.item?.item_code})</span>
                     <span className="text-amber-400 font-semibold">zurückgegeben</span>
-                    {ri.exchange_note && <span className="text-slate-500 italic">"{ri.exchange_note}"</span>}
+                    {ri.exchange_note && <span className="text-slate-400 italic">"{ri.exchange_note}"</span>}
                   </li>
                 ))}
               </ul>
@@ -2287,7 +2673,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+        <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3 flex-shrink-0">
           <button
             type="button"
             onClick={onReturnAll}
