@@ -8,14 +8,11 @@ let supabaseClient: any = null;
 
 const getSupabase = () => {
   if (supabaseClient) return supabaseClient;
-  
   const supabaseUrl = process.env.SUPABASE_URL || "";
   const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
   if (!supabaseUrl || !supabaseServiceRoleKey) {
     throw new Error("SUPABASE_URL oder SUPABASE_SERVICE_ROLE_KEY fehlen in den Umgebungsvariablen.");
   }
-
   supabaseClient = createClient(supabaseUrl, supabaseServiceRoleKey);
   return supabaseClient;
 };
@@ -108,7 +105,7 @@ async function startServer() {
 
       if (error) return res.status(500).json({ error: error.message });
 
-      const transformed = data.map(item => {
+      const transformed = data.map((item: any) => {
         const activeRentalItem = (item.hockey_rental_items || item.rental_items)?.find((ri: any) => (ri.hockey_rentals || ri.rentals) && !(ri.hockey_rentals || ri.rentals).returned_at);
         const activeRental = activeRentalItem?.hockey_rentals || activeRentalItem?.rentals;
         
@@ -139,8 +136,6 @@ async function startServer() {
 
       const prefix = CATEGORY_PREFIXES[category] || 'EQ';
       
-      // Generate item_code reliably
-      // We use a retry mechanism or a more robust check
       let item_code = '';
       let nextNumber = 1;
       let unique = false;
@@ -166,7 +161,6 @@ async function startServer() {
         
         item_code = `${prefix}-${nextNumber.toString().padStart(3, '0')}`;
         
-        // Check if this code exists (to handle concurrent requests better)
         const { count, error: countError } = await supabase
           .from('hockey_equipment_items')
           .select('id', { count: 'exact', head: true })
@@ -189,11 +183,11 @@ async function startServer() {
       const { data, error } = await supabase
         .from('hockey_equipment_items')
         .insert([{ 
-          category,
-          category_label,
+          category, 
+          category_label, 
           size, 
           brand, 
-          item_code,
+          item_code, 
           image: image || null, 
           condition_note: condition_note || null,
           status: 'verfügbar',
@@ -219,15 +213,16 @@ async function startServer() {
       const supabase = getSupabase();
       const { id } = req.params;
       const { category, category_label, size, brand, image, condition_note } = req.body;
+
       const { error } = await supabase
         .from('hockey_equipment_items')
         .update({ 
-          category,
-          category_label,
+          category, 
+          category_label, 
           size, 
           brand, 
           image, 
-          condition_note
+          condition_note 
         })
         .eq('id', id);
 
@@ -254,7 +249,6 @@ async function startServer() {
         return res.status(400).json({ success: false, message: "Name des Ausleihers fehlt" });
       }
 
-      // 0. Verify availability of ALL items
       const { data: items, error: checkError } = await supabase
         .from('hockey_equipment_items')
         .select('id, status, item_code')
@@ -262,9 +256,9 @@ async function startServer() {
 
       if (checkError) throw checkError;
       
-      const unavailable = items?.filter(i => i.status !== 'verfügbar');
+      const unavailable = items?.filter((i: any) => i.status !== 'verfügbar');
       if (unavailable && unavailable.length > 0) {
-        const codes = unavailable.map(i => i.item_code).join(', ');
+        const codes = unavailable.map((i: any) => i.item_code).join(', ');
         return res.status(400).json({ 
           success: false, 
           message: `Einige Items sind bereits verliehen: ${codes}` 
@@ -273,7 +267,6 @@ async function startServer() {
 
       const rental_type = item_ids.length > 1 ? 'bundle' : 'single';
 
-      // 1. Create rental record
       const { data: rentalData, error: rentalError } = await supabase
         .from('hockey_rentals')
         .insert([{
@@ -289,7 +282,6 @@ async function startServer() {
       if (rentalError) throw rentalError;
       rentalId = rentalData[0].id;
 
-      // 2. Create rental_items links
       const rentalItems = item_ids.map(itemId => ({
         rental_id: rentalId,
         item_id: itemId
@@ -300,19 +292,16 @@ async function startServer() {
         .insert(rentalItems);
 
       if (riError) {
-        // Rollback rental record
         await supabase.from('hockey_rentals').delete().eq('id', rentalId);
         throw riError;
       }
 
-      // 3. Update items status
       const { error: itemError } = await supabase
         .from('hockey_equipment_items')
         .update({ status: 'verliehen' })
         .in('id', item_ids);
 
       if (itemError) {
-        // Rollback rental and rental_items
         await supabase.from('hockey_rental_items').delete().eq('rental_id', rentalId);
         await supabase.from('hockey_rentals').delete().eq('id', rentalId);
         throw itemError;
@@ -333,7 +322,6 @@ async function startServer() {
     try {
       const returned_at = new Date().toISOString().split('T')[0];
       
-      // 1. Get all items in this rental
       const { data: riData, error: riError } = await supabase
         .from('hockey_rental_items')
         .select('item_id')
@@ -347,7 +335,6 @@ async function startServer() {
 
       const itemIds = riData.map((ri: any) => ri.item_id);
 
-      // 2. Update items status to available
       const { error: itemError } = await supabase
         .from('hockey_equipment_items')
         .update({ status: 'verfügbar' })
@@ -355,14 +342,12 @@ async function startServer() {
 
       if (itemError) throw itemError;
 
-      // 3. Update rental record with return date
       const { error: rentalError } = await supabase
         .from('hockey_rentals')
         .update({ returned_at })
         .eq('id', id);
 
       if (rentalError) {
-        // Attempt to revert item status if rental update fails
         await supabase.from('hockey_equipment_items').update({ status: 'verliehen' }).in('id', itemIds);
         throw rentalError;
       }
@@ -387,6 +372,7 @@ async function startServer() {
 
       const supabase = getSupabase();
       const { id } = req.params;
+
       const { error } = await supabase
         .from('hockey_rentals')
         .update({ paid })
@@ -415,7 +401,7 @@ async function startServer() {
 
       if (error) return res.status(500).json({ error: error.message });
 
-      const transformed = data.map(rental => ({
+      const transformed = data.map((rental: any) => ({
         ...rental,
         items: (rental.hockey_rental_items || rental.rental_items)?.map((ri: any) => ri.hockey_equipment_items || ri.equipment_items) || []
       }));
@@ -431,7 +417,6 @@ async function startServer() {
       const supabase = getSupabase();
       const { id } = req.params;
 
-      // 1. Check if item is in any rental_items
       const { data: riData, error: checkError } = await supabase
         .from('hockey_rental_items')
         .select('id')
@@ -440,7 +425,6 @@ async function startServer() {
       if (checkError) throw checkError;
       
       if (riData && riData.length > 0) {
-        // Soft delete: keep in DB for history but hide from inventory
         const { error: updateError } = await supabase
           .from('hockey_equipment_items')
           .update({ 
@@ -455,7 +439,6 @@ async function startServer() {
         return res.json({ success: true, message: "Item wurde ausgemustert und aus dem Bestand entfernt. Die Historie bleibt erhalten." });
       }
 
-      // If no history, we can actually delete it
       const { error } = await supabase
         .from('hockey_equipment_items')
         .delete()
@@ -476,7 +459,6 @@ async function startServer() {
       const supabase = getSupabase();
       const { id } = req.params;
 
-      // 1. Get all items in this rental
       const { data: riData, error: riError } = await supabase
         .from('hockey_rental_items')
         .select('item_id')
@@ -486,7 +468,6 @@ async function startServer() {
       
       const itemIds = riData?.map((ri: any) => ri.item_id) || [];
 
-      // 2. If rental was active (not returned), set items back to available
       const { data: rentalData, error: rentalFetchError } = await supabase
         .from('hockey_rentals')
         .select('returned_at')
@@ -500,11 +481,10 @@ async function startServer() {
           .from('hockey_equipment_items')
           .update({ status: 'verfügbar' })
           .in('id', itemIds);
-        
+          
         if (itemUpdateError) throw itemUpdateError;
       }
 
-      // 3. Delete rental_items (cascade delete might be set in DB, but let's be explicit if not)
       const { error: riDeleteError } = await supabase
         .from('hockey_rental_items')
         .delete()
@@ -512,7 +492,6 @@ async function startServer() {
 
       if (riDeleteError) throw riDeleteError;
 
-      // 4. Delete rental record
       const { error } = await supabase
         .from('hockey_rentals')
         .delete()
@@ -528,8 +507,6 @@ async function startServer() {
     }
   });
 
-  // Conditional listen for local development (AI Studio)
-  // Vercel handles the execution of the app via the exported handler
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);

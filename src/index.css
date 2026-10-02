@@ -2,21 +2,27 @@
 @import "tailwindcss";
 
 :root {
-  --wiesel-navy: #1C1F2A;
-  --wiesel-navy-hover: #262B3A;
-  --wiesel-navy-light: #F0F3F8;
+  --wiesel-bg: #1C1F2A;
+  --wiesel-panel: #252936;
+  --wiesel-dark: #181B24;
+  --wiesel-hover: #282D3B;
+  --wiesel-hover-alt: #2A3040;
 }
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --color-wiesel-navy: #1C1F2A;
-  --color-wiesel-navy-hover: #262B3A;
-  --color-wiesel-navy-light: #F0F3F8;
+  --color-wiesel-bg: #1C1F2A;
+  --color-wiesel-panel: #252936;
+  --color-wiesel-dark: #181B24;
+  --color-wiesel-hover: #282D3B;
+  --color-wiesel-hover-alt: #2A3040;
+  --color-wiesel-navy: #181B24;
+  --color-wiesel-navy-hover: #252936;
 }
 
 @layer base {
-  body {
-    @apply antialiased bg-slate-50 text-slate-800;
+  html, body {
+    @apply antialiased bg-[#1C1F2A] text-slate-200 min-h-screen;
   }
 }
