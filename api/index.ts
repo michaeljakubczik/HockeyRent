@@ -37,6 +37,35 @@ const CATEGORY_PREFIXES: Record<string, string> = {
   'Goalie Maske': 'GM'
 };
 
+export function calculateSixMonthsDueDate(startDateStr: string): string {
+  if (!startDateStr) return '';
+  const parts = startDateStr.split('-');
+  if (parts.length !== 3) return startDateStr;
+  
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10); // 1 - 12
+  const day = parseInt(parts[2], 10);
+
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return startDateStr;
+
+  let targetMonth = month + 6;
+  let targetYear = year;
+  if (targetMonth > 12) {
+    targetMonth -= 12;
+    targetYear += 1;
+  }
+
+  // Tag 0 des Folgemonats liefert die Anzahl der Tage im targetMonth
+  const maxDaysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+  const targetDay = Math.min(day, maxDaysInTargetMonth);
+
+  const yyyy = targetYear.toString().padStart(4, '0');
+  const mm = targetMonth.toString().padStart(2, '0');
+  const dd = targetDay.toString().padStart(2, '0');
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -242,12 +271,33 @@ async function startServer() {
     }
   });
 
+// Saubere Berechnung: 6 Kalendermonate ab rented_at (inkl. Monatsende-Sonderfall)
+function calculateDueDate(startDateStr: string): string {
+  if (!startDateStr) return '';
+  const match = startDateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10); // 1-12
+    const day = parseInt(match[3], 10);
+    const totalMonths = month - 1 + 6;
+    const targetYear = year + Math.floor(totalMonths / 12);
+    const targetMonth = (totalMonths % 12) + 1; // 1-12
+    const daysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+    const targetDay = Math.min(day, daysInTargetMonth);
+    const yyyy = String(targetYear);
+    const mm = String(targetMonth).padStart(2, '0');
+    const dd = String(targetDay).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return '';
+}
+
   app.post("/api/rentals", authHeader, async (req, res) => {
     const supabase = getSupabase();
     let rentalId: number | null = null;
     
     try {
-      const { renter_name, rented_at, paid, fee_total, note, item_ids } = req.body;
+      const { renter_name, rented_at, paid, fee_total, note, item_ids, due_date } = req.body;
       
       if (!item_ids || !Array.isArray(item_ids) || item_ids.length === 0) {
         return res.status(400).json({ success: false, message: "Keine Items ausgewählt" });
@@ -275,20 +325,27 @@ async function startServer() {
 
       const rental_type = item_ids.length > 1 ? 'bundle' : 'single';
       const today = rented_at || new Date().toISOString().split('T')[0];
+      const finalDueDate = due_date || calculateDueDate(today);
+
+      const rentalInsertData: any = {
+        renter_name,
+        rented_at: today,
+        due_date: finalDueDate || null,
+        paid: !!paid,
+        fee_total: parseFloat(fee_total) || 0,
+        note: note || null,
+        rental_type
+      };
 
       const { data: rentalData, error: rentalError } = await supabase
         .from('hockey_rentals')
-        .insert([{
-          renter_name,
-          rented_at: today,
-          paid: !!paid,
-          fee_total: parseFloat(fee_total) || 0,
-          note: note || null,
-          rental_type
-        }])
+        .insert([rentalInsertData])
         .select();
 
       if (rentalError) throw rentalError;
+      if (!rentalData || rentalData.length === 0) {
+        throw new Error("Fehler beim Erstellen des Verleih-Datensatzes");
+      }
       rentalId = rentalData[0].id;
 
       const rentalItems = item_ids.map(itemId => ({
@@ -560,7 +617,7 @@ async function startServer() {
   });
 
   // Teil zu einem bestehenden laufenden Bundle hinzufügen
-  app.post("/api/rentals/:id/items", authHeader, async (req, res) => {
+  const handleAddItemToRental = async (req: any, res: any) => {
     const supabase = getSupabase();
     const { id } = req.params;
     const { item_id, note } = req.body;
@@ -627,11 +684,14 @@ async function startServer() {
       console.error(`[Add Item Error]: ${err.message}`);
       res.status(500).json({ success: false, message: "Fehler beim Hinzufügen des Teils." });
     }
-  });
+  };
+
+  app.post("/api/rentals/:id/items", authHeader, handleAddItemToRental);
+  app.post("/api/rentals/:id/add-item", authHeader, handleAddItemToRental);
 
   app.patch("/api/rentals/:id", authHeader, async (req, res) => {
     try {
-      const { renter_name, fee_total, note, paid } = req.body;
+      const { renter_name, fee_total, note, paid, due_date } = req.body;
       const supabase = getSupabase();
       const { id } = req.params;
 
@@ -640,6 +700,7 @@ async function startServer() {
       if (fee_total !== undefined) updates.fee_total = Number(fee_total);
       if (note !== undefined) updates.note = note;
       if (paid !== undefined) updates.paid = Boolean(paid);
+      if (due_date !== undefined) updates.due_date = due_date;
 
       const { error } = await supabase
         .from('hockey_rentals')

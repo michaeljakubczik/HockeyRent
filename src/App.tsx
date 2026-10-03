@@ -20,12 +20,44 @@ import {
   ChevronUp,
   RotateCcw,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory } from './types';
 
 const API_BASE = '/api';
+
+// Saubere Berechnung: 6 Kalendermonate ab Startdatum (inkl. Monatsende-Sonderfall)
+export function calculateDueDate(startDateStr: string): string {
+  if (!startDateStr) return '';
+  const match = startDateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10); // 1-12
+    const day = parseInt(match[3], 10);
+    const totalMonths = month - 1 + 6;
+    const targetYear = year + Math.floor(totalMonths / 12);
+    const targetMonth = (totalMonths % 12) + 1; // 1-12
+    const daysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+    const targetDay = Math.min(day, daysInTargetMonth);
+    const yyyy = String(targetYear);
+    const mm = String(targetMonth).padStart(2, '0');
+    const dd = String(targetDay).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return '';
+}
+
+// Deutsches Datumsformat für die Anzeige (DD.MM.YYYY)
+export function formatDateDe(dateStr?: string | null): string {
+  if (!dateStr) return '';
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[3]}.${match[2]}.${match[1]}`;
+  }
+  return dateStr;
+}
 
 const CATEGORIES: { label: string, value: EquipmentCategory, type: 'Feldspieler' | 'Goalie' }[] = [
   { label: 'Handschuhe', value: 'Handschuhe', type: 'Feldspieler' },
@@ -77,7 +109,19 @@ export default function App() {
 
   const [rentingItem, setRentingItem] = useState<EquipmentItem | null>(null);
   const [editingBundleRental, setEditingBundleRental] = useState<Rental | null>(null);
-  const [initialExchangeItem, setInitialExchangeItem] = useState<EquipmentItem | null>(null);
+
+  // Spezialmodi für Bundle-Bearbeitung über den normalen zentralen Bestand
+  const [bundleExchange, setBundleExchange] = useState<{
+    rentalId: number;
+    rental: Rental;
+    oldItem: EquipmentItem;
+    category: string;
+  } | null>(null);
+
+  const [bundleAdd, setBundleAdd] = useState<{
+    rentalId: number;
+    rental: Rental;
+  } | null>(null);
 
   // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
@@ -124,9 +168,19 @@ export default function App() {
 
   // Filter Pipeline: items -> Status -> Category -> Size
   const displayedItems = items.filter(item => {
-    if (statusFilter !== 'all' && item.status !== statusFilter) {
-      return false;
+    if (item.is_deleted) return false;
+
+    // Im Spezialmodus (Austausch oder Teil hinzufügen) ausschließlich verfügbare Teile
+    if (bundleExchange || bundleAdd) {
+      if (item.status !== 'verfügbar') {
+        return false;
+      }
+    } else {
+      if (statusFilter !== 'all' && item.status !== statusFilter) {
+        return false;
+      }
     }
+
     if (categoryFilter !== 'all' && item.category_label !== categoryFilter && item.category !== categoryFilter) {
       return false;
     }
@@ -155,11 +209,12 @@ export default function App() {
 
   const [editItem, setEditItem] = useState<EquipmentItem | null>(null);
 
-  // Standard-Leihgebühr: numerischer Initialwert 60, editierbar
+  // Standard-Leihgebühr: numerischer Initialwert 60, editierbar. Standard-Laufzeit: 6 Kalendermonate
   const [rentForm, setRentForm] = useState<{
     item_ids: number[],
     renter_name: string,
     rented_at: string,
+    due_date: string,
     paid: boolean,
     fee_total: number | string,
     note: string
@@ -167,10 +222,32 @@ export default function App() {
     item_ids: [],
     renter_name: '',
     rented_at: new Date().toISOString().split('T')[0],
+    due_date: calculateDueDate(new Date().toISOString().split('T')[0]),
     paid: false,
     fee_total: 60,
     note: ''
   });
+
+  const handleRentedAtChange = (newDate: string) => {
+    setRentForm(prev => ({
+      ...prev,
+      rented_at: newDate,
+      due_date: calculateDueDate(newDate)
+    }));
+  };
+
+  const resetRentForm = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setRentForm({
+      item_ids: [],
+      renter_name: '',
+      rented_at: today,
+      due_date: calculateDueDate(today),
+      paid: false,
+      fee_total: 60,
+      note: ''
+    });
+  };
 
   useEffect(() => {
     const savedPassword = sessionStorage.getItem('hockey_rent_password');
@@ -336,15 +413,8 @@ export default function App() {
         })
       });
       if (res.ok) {
-        // Initialwert für den nächsten Verleih wieder auf 60 zurücksetzen
-        setRentForm({ 
-          item_ids: [], 
-          renter_name: '', 
-          rented_at: new Date().toISOString().split('T')[0], 
-          paid: false, 
-          fee_total: 60, 
-          note: '' 
-        });
+        // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
+        resetRentForm();
         setBag([]);
         fetchItems(password);
         setCurrentView('available');
@@ -373,7 +443,7 @@ export default function App() {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-admin-password': password
+          'x-admin-password': password 
         },
         body: JSON.stringify({
           ...rentForm,
@@ -382,15 +452,8 @@ export default function App() {
         })
       });
       if (res.ok) {
-        // Initialwert für den nächsten Verleih wieder auf 60 zurücksetzen
-        setRentForm({ 
-          item_ids: [], 
-          renter_name: '', 
-          rented_at: new Date().toISOString().split('T')[0], 
-          paid: false, 
-          fee_total: 60, 
-          note: '' 
-        });
+        // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
+        resetRentForm();
         setRentingItem(null);
         fetchItems(password);
         setCurrentView('available');
@@ -512,10 +575,10 @@ export default function App() {
     }
   };
 
-  // Details einer bestehenden Ausleihe anpassen (Ausleiher, Gebühr, Notiz)
+  // Details einer bestehenden Ausleihe anpassen (Ausleiher, Gebühr, Notiz, Rückgabedatum)
   const handleUpdateRentalDetails = async (
     rentalId: number, 
-    updates: { renter_name?: string; fee_total?: number; note?: string }
+    updates: { renter_name?: string; fee_total?: number; note?: string; due_date?: string }
   ) => {
     setLoading(true);
     setError(null);
@@ -536,6 +599,168 @@ export default function App() {
       }
     } catch (err) {
       setError('Fehler beim Aktualisieren der Details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 1. Austauschmodus starten:
+  // Schließt Modal, wechselt in normalen Bestand, schließt alle Kategorien außer der passenden Kategorie
+  const startExchange = (rental: Rental, oldItem: EquipmentItem) => {
+    const oldCat = oldItem.category_label || oldItem.category;
+
+    setEditingBundleRental(null);
+
+    setBundleExchange({
+      rentalId: rental.id,
+      rental,
+      oldItem,
+      category: oldCat
+    });
+    setBundleAdd(null);
+
+    setCurrentView('available');
+
+    // Filter bereinigen
+    setCategoryFilter('all');
+    setSizeFilter('all');
+    setStatusFilter('verfügbar');
+
+    // Alle Kategorien schließen, NUR die Kategorie des auszutauschenden Teils öffnen
+    const newCollapsed: Record<string, boolean> = {};
+    CATEGORIES.forEach(c => {
+      newCollapsed[c.label] = (c.label !== oldCat);
+    });
+    items.forEach(i => {
+      const catName = i.category_label || i.category;
+      if (catName) {
+        newCollapsed[catName] = (catName !== oldCat);
+      }
+    });
+    setCollapsedCategories(newCollapsed);
+  };
+
+  // 2. Teil-Hinzufügen-Modus starten:
+  // Schließt Modal, wechselt in normalen Bestand, schließt ALLE Kategorien
+  const startAddItem = (rental: Rental) => {
+    setEditingBundleRental(null);
+
+    setBundleAdd({
+      rentalId: rental.id,
+      rental
+    });
+    setBundleExchange(null);
+
+    setCurrentView('available');
+
+    // Filter bereinigen
+    setCategoryFilter('all');
+    setSizeFilter('all');
+    setStatusFilter('verfügbar');
+
+    // ALLE Kategorien schließen
+    const newCollapsed: Record<string, boolean> = {};
+    CATEGORIES.forEach(c => {
+      newCollapsed[c.label] = true;
+    });
+    items.forEach(i => {
+      const catName = i.category_label || i.category;
+      if (catName) {
+        newCollapsed[catName] = true;
+      }
+    });
+    setCollapsedCategories(newCollapsed);
+  };
+
+  // 3. Spezialmodus abbrechen:
+  // Beendet Austausch/Add, kehrt zu Ausleihen -> Aktuell zurück und öffnet den Rental wieder
+  const handleCancelSpecialMode = () => {
+    const targetRentalId = bundleExchange?.rentalId || bundleAdd?.rentalId;
+    setBundleExchange(null);
+    setBundleAdd(null);
+
+    setStatusFilter('all');
+    setCategoryFilter('all');
+    setSizeFilter('all');
+
+    setCurrentView('history');
+    setRentalsSubTab('active');
+    if (targetRentalId) {
+      setExpandedRentals(prev => ({ ...prev, [targetRentalId]: true }));
+    }
+  };
+
+  // 4. Ersatzteil im Austauschmodus auswählen
+  const handleSelectExchangeReplacement = async (newItem: EquipmentItem) => {
+    if (!bundleExchange) return;
+    const { rentalId, oldItem } = bundleExchange;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/exchange`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        },
+        body: JSON.stringify({
+          return_item_id: oldItem.id,
+          new_item_id: newItem.id,
+          note: `Austausch gegen ${oldItem.item_code}`
+        })
+      });
+
+      if (res.ok) {
+        setBundleExchange(null);
+        setStatusFilter('all');
+        await fetchItems(password);
+        setCurrentView('history');
+        setRentalsSubTab('active');
+        setExpandedRentals(prev => ({ ...prev, [rentalId]: true }));
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler beim Austauschen des Equipments');
+      }
+    } catch (err) {
+      setError('Fehler beim Austauschen des Equipments');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 5. Equipment im Add-Modus auswählen
+  const handleSelectAddEquipment = async (item: EquipmentItem) => {
+    if (!bundleAdd) return;
+    const { rentalId } = bundleAdd;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/items`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        },
+        body: JSON.stringify({
+          item_id: item.id
+        })
+      });
+
+      if (res.ok) {
+        setBundleAdd(null);
+        setStatusFilter('all');
+        await fetchItems(password);
+        setCurrentView('history');
+        setRentalsSubTab('active');
+        setExpandedRentals(prev => ({ ...prev, [rentalId]: true }));
+      } else {
+        const data: ApiResponse = await res.json();
+        setError(data.message || 'Fehler beim Hinzufügen des Equipments');
+      }
+    } catch (err) {
+      setError('Fehler beim Hinzufügen des Equipments');
     } finally {
       setLoading(false);
     }
@@ -898,7 +1123,63 @@ export default function App() {
                 )}
               </div>
 
-              {/* Kompakte Bestandszahlen & Statusfilter */}
+              {/* Spezialmodus: Austausch */}
+              {bundleExchange && (
+                <div className="bg-[#181B24] border-2 border-blue-500 rounded-2xl p-4 shadow-xl flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex-shrink-0">
+                      <ArrowRightLeft className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-extrabold text-white flex items-center gap-2 flex-wrap">
+                        <span>{bundleExchange.oldItem.item_code} austauschen</span>
+                        <span className="text-xs font-normal text-slate-400">
+                          ({bundleExchange.oldItem.brand} · Gr. {bundleExchange.oldItem.size})
+                        </span>
+                      </h3>
+                      <p className="text-xs sm:text-sm text-blue-300 font-medium mt-0.5">
+                        Wähle einen neuen {bundleExchange.category}.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelSpecialMode}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer shadow flex-shrink-0"
+                  >
+                    Abbrechen
+                  </button>
+                </div>
+              )}
+
+              {/* Spezialmodus: Teil hinzufügen */}
+              {bundleAdd && (
+                <div className="bg-[#181B24] border-2 border-emerald-500 rounded-2xl p-4 shadow-xl flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex-shrink-0">
+                      <Plus className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-extrabold text-white">
+                        Teil zu {bundleAdd.rental.renter_name} hinzufügen
+                      </h3>
+                      <p className="text-xs sm:text-sm text-emerald-300 font-medium mt-0.5">
+                        Wähle ein verfügbares Equipmentteil.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelSpecialMode}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer shadow flex-shrink-0"
+                  >
+                    Abbrechen
+                  </button>
+                </div>
+              )}
+
+              {/* Kompakte Bestandszahlen & Statusfilter (nur im Normalmodus) */}
+              {!(bundleExchange || bundleAdd) && (
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
                 <button
                   type="button"
@@ -954,6 +1235,7 @@ export default function App() {
                   <div className="text-xl sm:text-2xl font-black text-white">{rentedCount}</div>
                 </button>
               </div>
+              )}
 
               {/* Filterleiste: Kategorie & Größe */}
               <div className="bg-[#252936] p-3.5 md:p-4 rounded-2xl border border-slate-700/60 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1093,13 +1375,26 @@ export default function App() {
                                     <ItemCard
                                       key={item.id}
                                       item={item}
+                                      exchangeMode={!!bundleExchange}
+                                      onSelectExchange={
+                                        bundleExchange
+                                          ? () => handleSelectExchangeReplacement(item)
+                                          : undefined
+                                      }
+                                      addMode={!!bundleAdd}
+                                      onSelectAdd={
+                                        bundleAdd
+                                          ? () => handleSelectAddEquipment(item)
+                                          : undefined
+                                      }
                                       onRent={() => {
                                         setRentingItem(item);
-                                        // Standard-Leihgebühr: 60 Euro
+                                        const today = new Date().toISOString().split('T')[0];
                                         setRentForm({
                                           item_ids: [item.id],
                                           renter_name: '',
-                                          rented_at: new Date().toISOString().split('T')[0],
+                                          rented_at: today,
+                                          due_date: calculateDueDate(today),
                                           paid: false,
                                           fee_total: 60,
                                           note: ''
@@ -1211,6 +1506,37 @@ export default function App() {
                           placeholder="z.B. Max Mustermann"
                         />
                       </div>
+                      {/* Ausleihdatum und automatisch berechnetes Rückgabedatum (6 Monate) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="w-full min-w-0 max-w-full">
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                            Ausleihdatum
+                          </label>
+                          <div className="relative w-full min-w-0 max-w-full">
+                            <Calendar className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                            <input
+                              type="date"
+                              required
+                              value={rentForm.rented_at}
+                              onChange={(e) => handleRentedAtChange(e.target.value)}
+                              className="w-full min-w-0 max-w-full block box-border pl-10 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="w-full min-w-0 max-w-full">
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                            Rückgabe bis
+                          </label>
+                          <div className="px-4 py-3 rounded-xl bg-[#181B24] border border-blue-500/40 text-blue-300 font-bold text-base sm:text-sm flex items-center justify-between">
+                            <span>{formatDateDe(rentForm.due_date)}</span>
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 uppercase tracking-wider">
+                              6 Mon.
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                           Leihgebühr (€)
@@ -1331,14 +1657,9 @@ export default function App() {
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
                         onReturnAll={() => handleReturnRental(rental.id)}
                         onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(rental.id, itemId, note)}
-                        onExchangeItem={(item) => {
-                          setEditingBundleRental(rental);
-                          setInitialExchangeItem(item);
-                        }}
-                        onEditBundle={() => {
-                          setEditingBundleRental(rental);
-                          setInitialExchangeItem(null);
-                        }}
+                        onExchangeItem={(item) => startExchange(rental, item)}
+                        onAddItem={() => startAddItem(rental)}
+                        onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
                       />
                     ))
@@ -1556,18 +1877,30 @@ export default function App() {
                   />
                 </div>
 
-                {/* Datumsfeld: Überbreite auf Mobile behoben (w-full min-w-0 max-w-full box-border block) */}
-                <div className="w-full min-w-0 max-w-full">
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Verliehen am</label>
-                  <div className="relative w-full min-w-0 max-w-full">
-                    <Calendar className="absolute left-3.5 top-3.5 w-5 h-5 text-slate-400 pointer-events-none" />
-                    <input
-                      type="date"
-                      required
-                      value={rentForm.rented_at}
-                      onChange={(e) => setRentForm({ ...rentForm, rented_at: e.target.value })}
-                      className="w-full min-w-0 max-w-full block box-border pl-11 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
+                {/* Datumsfeld und Rückgabe bis (6 Monate) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="w-full min-w-0 max-w-full">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Verliehen am</label>
+                    <div className="relative w-full min-w-0 max-w-full">
+                      <Calendar className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                      <input
+                        type="date"
+                        required
+                        value={rentForm.rented_at}
+                        onChange={(e) => handleRentedAtChange(e.target.value)}
+                        className="w-full min-w-0 max-w-full block box-border pl-10 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="w-full min-w-0 max-w-full">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Rückgabe bis</label>
+                    <div className="px-3.5 py-3 rounded-xl bg-[#181B24] border border-blue-500/40 text-blue-300 font-bold text-base sm:text-sm flex items-center justify-between">
+                      <span>{formatDateDe(rentForm.due_date)}</span>
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 uppercase">
+                        6 Mon.
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1620,20 +1953,15 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* MODAL: BUNDLE BEARBEITEN (Teile zurückgeben, Teile hinzufügen, Austausch) */}
+      {/* MODAL: BUNDLE BEARBEITEN */}
       <AnimatePresence>
         {editingBundleRental && (
           <BundleEditorModal
             rental={editingBundleRental}
-            initialExchangeItem={initialExchangeItem}
-            availableItems={items.filter(i => i.status === 'verfügbar' && !i.is_deleted)}
-            onClose={() => {
-              setEditingBundleRental(null);
-              setInitialExchangeItem(null);
-            }}
+            onClose={() => setEditingBundleRental(null)}
+            onStartExchange={(item) => startExchange(editingBundleRental, item)}
+            onStartAddItem={() => startAddItem(editingBundleRental)}
             onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(editingBundleRental.id, itemId, note)}
-            onAddItem={(itemId, note) => handleAddItemToBundle(editingBundleRental.id, itemId, note)}
-            onExchangeItem={(returnItemId, newItemId, note) => handleExchangeItemInBundle(editingBundleRental.id, returnItemId, newItemId, note)}
             onUpdateRentalDetails={(updates) => handleUpdateRentalDetails(editingBundleRental.id, updates)}
             onReturnAll={() => handleReturnRental(editingBundleRental.id)}
           />
@@ -1666,6 +1994,10 @@ interface ItemCardProps {
   onEdit: () => void;
   onToggleBag: () => void;
   inBag: boolean;
+  exchangeMode?: boolean;
+  onSelectExchange?: () => void;
+  addMode?: boolean;
+  onSelectAdd?: () => void;
 }
 
 const ItemCard: React.FC<ItemCardProps> = ({ 
@@ -1676,7 +2008,11 @@ const ItemCard: React.FC<ItemCardProps> = ({
   onDelete, 
   onEdit, 
   onToggleBag,
-  inBag 
+  inBag,
+  exchangeMode,
+  onSelectExchange,
+  addMode,
+  onSelectAdd
 }) => {
   const isRented = item.status === 'verliehen';
 
@@ -1798,6 +2134,26 @@ const ItemCard: React.FC<ItemCardProps> = ({
               )
             )}
           </div>
+        ) : exchangeMode ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onSelectExchange?.(); }}
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer mt-1"
+            title="Als Ersatz wählen"
+          >
+            <ArrowRightLeft className="w-3.5 h-3.5" />
+            <span>Als Ersatz wählen</span>
+          </button>
+        ) : addMode ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onSelectAdd?.(); }}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer mt-1"
+            title="Hinzufügen"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Hinzufügen</span>
+          </button>
         ) : (
           <div className="flex gap-1.5 mt-1">
             <button
@@ -1834,6 +2190,7 @@ interface ActiveRentalCardProps {
   onReturnAll: () => void;
   onReturnSingleItem: (itemId: number, note?: string) => void;
   onExchangeItem: (item: EquipmentItem) => void;
+  onAddItem: () => void;
   onEditBundle: () => void;
   onDelete: () => void;
 }
@@ -1846,6 +2203,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   onReturnAll,
   onReturnSingleItem,
   onExchangeItem,
+  onAddItem,
   onEditBundle,
   onDelete
 }) => {
@@ -1867,7 +2225,13 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             {rental.renter_name}
           </h4>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-            <span>seit {rental.rented_at}</span>
+            <span>seit {formatDateDe(rental.rented_at)}</span>
+            {rental.due_date && (
+              <>
+                <span>·</span>
+                <span className="text-blue-300 font-semibold">Rückgabe bis {formatDateDe(rental.due_date)}</span>
+              </>
+            )}
             <span>•</span>
             <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
             <span>•</span>
@@ -1901,8 +2265,15 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
           {/* Status- & Aktionsleiste oben */}
           <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
-            <div className="text-slate-300">
-              Ausgeliehen seit: <strong className="text-white">{rental.rented_at}</strong> · Gebühr: <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong>
+            <div className="text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>Ausgeliehen seit: <strong className="text-white">{formatDateDe(rental.rented_at)}</strong></span>
+              {rental.due_date && (
+                <span className="text-blue-300 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Rückgabe bis: <strong className="text-blue-200">{formatDateDe(rental.due_date)}</strong></span>
+                </span>
+              )}
+              <span>· Gebühr: <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong></span>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -1921,18 +2292,29 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
 
           {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"- & "Tauschen"-Aktion */}
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 Aktuell ausgeliehenes Equipment ({activeItems.length}):
               </p>
-              <button
-                type="button"
-                onClick={onEditBundle}
-                className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 hover:underline cursor-pointer"
-              >
-                <Edit className="w-3.5 h-3.5" />
-                <span>Bundle bearbeiten / Erweitern</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onAddItem}
+                  className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 hover:underline cursor-pointer"
+                  title="Neues Equipmentteil zu dieser Ausleihe hinzufügen"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Teil hinzufügen</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onEditBundle}
+                  className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 hover:underline cursor-pointer"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  <span>Bundle bearbeiten</span>
+                </button>
+              </div>
             </div>
 
             {activeItems.length === 0 ? (
@@ -2015,11 +2397,19 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={onAddItem}
+                className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Teil hinzufügen</span>
+              </button>
+              <button
+                type="button"
                 onClick={onEditBundle}
                 className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
               >
                 <Edit className="w-3.5 h-3.5" />
-                <span>Bundle bearbeiten / Erweitern</span>
+                <span>Bundle bearbeiten</span>
               </button>
               <button
                 type="button"
@@ -2078,7 +2468,7 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
             {rental.renter_name}
           </h4>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-            <span>{rental.rented_at} bis {rental.returned_at}</span>
+            <span>{formatDateDe(rental.rented_at)} bis {formatDateDe(rental.returned_at)}</span>
             <span>•</span>
             <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
             <span>•</span>
@@ -2114,11 +2504,16 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
             <div className="flex flex-wrap items-center gap-3 text-slate-300">
               <span className="flex items-center gap-1.5">
                 <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                <span>Verliehen: <strong>{rental.rented_at}</strong></span>
+                <span>Verliehen: <strong>{formatDateDe(rental.rented_at)}</strong></span>
               </span>
+              {rental.due_date && (
+                <span className="flex items-center gap-1.5 text-slate-400">
+                  <span>Geplant bis: <strong className="text-slate-300">{formatDateDe(rental.due_date)}</strong></span>
+                </span>
+              )}
               <span className="flex items-center gap-1.5 text-emerald-400">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Zurück: <strong>{rental.returned_at}</strong></span>
+                <span>Zurück: <strong>{formatDateDe(rental.returned_at)}</strong></span>
               </span>
             </div>
 
@@ -2205,46 +2600,32 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
 // 3. BUNDLE EDITOR MODAL (Teilrückgabe, Hinzufügen, Austausch, Details)
 interface BundleEditorModalProps {
   rental: Rental;
-  initialExchangeItem?: EquipmentItem | null;
-  availableItems: EquipmentItem[];
   onClose: () => void;
+  onStartExchange: (item: EquipmentItem) => void;
+  onStartAddItem: () => void;
   onReturnSingleItem: (itemId: number, note?: string) => Promise<void>;
-  onAddItem: (itemId: number, note?: string) => Promise<void>;
-  onExchangeItem: (returnItemId: number, newItemId: number, note?: string) => Promise<void>;
-  onUpdateRentalDetails?: (updates: { renter_name?: string; fee_total?: number; note?: string }) => Promise<void>;
+  onUpdateRentalDetails?: (updates: { renter_name?: string; fee_total?: number; note?: string; due_date?: string }) => Promise<void>;
   onReturnAll: () => Promise<void>;
 }
 
 const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
   rental,
-  initialExchangeItem,
-  availableItems,
   onClose,
+  onStartExchange,
+  onStartAddItem,
   onReturnSingleItem,
-  onAddItem,
-  onExchangeItem,
   onUpdateRentalDetails,
   onReturnAll
 }) => {
-  // Exchange state
-  const [exchangeItem, setExchangeItem] = useState<EquipmentItem | null>(initialExchangeItem || null);
-  const [exchangeCategory, setExchangeCategory] = useState<string>(
-    initialExchangeItem ? (initialExchangeItem.category_label || initialExchangeItem.category) : 'all'
-  );
-  const [exchangeNote, setExchangeNote] = useState<string>('');
-
   // Single return state (with optional note prompt)
   const [returnItemPromptId, setReturnItemPromptId] = useState<number | null>(null);
   const [singleReturnNote, setSingleReturnNote] = useState<string>('');
-
-  // Add new item state
-  const [addCategory, setAddCategory] = useState<string>('all');
-  const [addNote, setAddNote] = useState<string>('');
 
   // Edit rental details state
   const [showEditDetails, setShowEditDetails] = useState<boolean>(false);
   const [editRenterName, setEditRenterName] = useState<string>(rental.renter_name);
   const [editFee, setEditFee] = useState<number | string>(rental.fee_total);
+  const [editDueDate, setEditDueDate] = useState<string>(rental.due_date || '');
   const [editRentalNote, setEditRentalNote] = useState<string>(rental.note || '');
 
   const [actionLoading, setActionLoading] = useState<boolean>(false);
@@ -2252,47 +2633,11 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
   const activeItems = rental.items || [];
   const returnedHistory = (rental.all_rental_items || []).filter(ri => !!ri.returned_at);
 
-  const availableCategories = Array.from(
-    new Set<string>(availableItems.map(i => i.category_label || i.category).filter(Boolean))
-  ).sort((a, b) => a.localeCompare(b, 'de'));
-
-  // Items for exchange filter
-  const exchangeAvailableItems = availableItems.filter(i => {
-    if (exchangeCategory !== 'all' && (i.category_label !== exchangeCategory && i.category !== exchangeCategory)) {
-      return false;
-    }
-    return true;
-  });
-
-  // Items for add filter
-  const addAvailableItems = availableItems.filter(i => {
-    if (addCategory !== 'all' && (i.category_label !== addCategory && i.category !== addCategory)) {
-      return false;
-    }
-    return true;
-  });
-
   const handleExecuteSingleReturn = async (itemId: number) => {
     setActionLoading(true);
     await onReturnSingleItem(itemId, singleReturnNote.trim() || undefined);
     setReturnItemPromptId(null);
     setSingleReturnNote('');
-    setActionLoading(false);
-  };
-
-  const handleExecuteExchange = async (newItemId: number) => {
-    if (!exchangeItem) return;
-    setActionLoading(true);
-    await onExchangeItem(exchangeItem.id, newItemId, exchangeNote.trim() || undefined);
-    setExchangeItem(null);
-    setExchangeNote('');
-    setActionLoading(false);
-  };
-
-  const handleExecuteAddItem = async (itemId: number) => {
-    setActionLoading(true);
-    await onAddItem(itemId, addNote.trim() || undefined);
-    setAddNote('');
     setActionLoading(false);
   };
 
@@ -2303,6 +2648,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
     await onUpdateRentalDetails({
       renter_name: editRenterName.trim() || rental.renter_name,
       fee_total: editFee === '' ? 0 : Number(editFee),
+      due_date: editDueDate || undefined,
       note: editRentalNote.trim() || undefined
     });
     setShowEditDetails(false);
@@ -2318,21 +2664,23 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
         className="bg-[#252936] w-full max-w-2xl max-h-[92vh] rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80 flex flex-col box-border overflow-hidden"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-slate-800 flex-shrink-0">
-          <div>
+        <div className="flex items-center justify-between pb-4 border-b border-slate-800 flex-shrink-0 gap-3">
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg sm:text-xl font-extrabold text-white">Bundle bearbeiten</h3>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+              <h3 className="text-lg sm:text-xl font-extrabold text-white truncate">Bundle bearbeiten</h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 flex-shrink-0">
                 {activeItems.length} aktiv
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Ausleiher: <strong className="text-white">{rental.renter_name}</strong> (seit {rental.rented_at} · Gebühr: <strong className="text-emerald-400">{rental.fee_total.toFixed(2)} €</strong>)
+            <p className="text-xs text-slate-400 mt-0.5 truncate">
+              Ausleiher: <strong className="text-white">{rental.renter_name}</strong> (seit {formatDateDe(rental.rented_at)}
+              {rental.due_date && <span> · Rückgabe bis <strong className="text-blue-300">{formatDateDe(rental.due_date)}</strong></span>}
+              · Gebühr: <strong className="text-emerald-400">{rental.fee_total.toFixed(2)} €</strong>)
             </p>
           </div>
           <button 
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer flex-shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
@@ -2340,108 +2688,25 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="overflow-y-auto py-4 space-y-6 flex-1 pr-1">
-          {/* MODUS: TEIL AUSTAUSCHEN (wenn ein Teil aktiv zum Tausch ausgewählt ist) */}
-          {exchangeItem && (
-            <div className="bg-[#181B24] border-2 border-blue-500/60 rounded-2xl p-4 space-y-3.5 shadow-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm font-bold text-blue-300">
-                  <ArrowRightLeft className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                  <span>Teil austauschen:</span>
-                  <span className="text-white bg-[#252936] px-2 py-0.5 rounded-md border border-slate-700 text-xs font-mono">
-                    {exchangeItem.category_label} · {exchangeItem.brand} (Gr. {exchangeItem.size}) · {exchangeItem.item_code}
-                  </span>
-                </div>
-                <button 
-                  type="button" 
-                  onClick={() => setExchangeItem(null)} 
-                  className="text-slate-400 hover:text-white text-xs underline cursor-pointer"
-                >
-                  Abbrechen
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 ml-0.5">
-                  Grund / Notiz zum Tausch (optional)
-                </label>
-                <input 
-                  type="text"
-                  value={exchangeNote}
-                  onChange={(e) => setExchangeNote(e.target.value)}
-                  placeholder="z.B. Größe M zu klein, Wechsel auf Gr. L"
-                  className="w-full px-3.5 py-2.5 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:ring-1 focus:ring-blue-500 box-border"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-slate-300">
-                    Ersatzteil auswählen ({exchangeAvailableItems.length} verfügbar):
-                  </span>
-                  <div className="relative w-44">
-                    <select
-                      value={exchangeCategory}
-                      onChange={(e) => setExchangeCategory(e.target.value)}
-                      className="w-full pl-2.5 pr-7 py-1 bg-[#252936] border border-slate-700 rounded-lg text-xs font-medium text-slate-200 outline-none appearance-none cursor-pointer"
-                    >
-                      <option value="all">Alle Kategorien</option>
-                      {availableCategories.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
-                  </div>
-                </div>
-
-                {exchangeAvailableItems.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic p-4 bg-[#252936] rounded-xl text-center">
-                    Keine verfügbaren Teile in dieser Kategorie.
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 bg-[#252936]/50 rounded-xl border border-slate-800">
-                    {exchangeAvailableItems.map(item => (
-                      <div key={item.id} className="bg-[#252936] p-2.5 rounded-xl border border-slate-700/60 flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
-                          <p className="text-[10px] text-slate-400 truncate">
-                            {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={actionLoading}
-                          onClick={() => handleExecuteExchange(item.id)}
-                          className="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-all shadow cursor-pointer disabled:opacity-50 flex-shrink-0"
-                        >
-                          Tauschen
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* 1. Aktuelle Teile im Bundle */}
+          {/* 1. Aktuell im Bundle */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                1. Aktuell im Bundle ({activeItems.length} Teile)
+                Aktuell im Bundle ({activeItems.length} Teile)
               </h4>
               <button
                 type="button"
                 onClick={() => setShowEditDetails(!showEditDetails)}
                 className="text-xs text-blue-400 hover:text-blue-300 font-semibold cursor-pointer"
               >
-                {showEditDetails ? 'Details ausblenden' : 'Ausleiher / Gebühr anpassen'}
+                {showEditDetails ? 'Details ausblenden' : 'Ausleiher / Gebühr / Rückgabe anpassen'}
               </button>
             </div>
 
             {/* Optionaler Bereich: Ausleih-Details anpassen */}
             {showEditDetails && (
               <form onSubmit={handleSaveDetails} className="bg-[#181B24] p-3.5 rounded-2xl border border-slate-700/60 mb-3 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Ausleiher Name</label>
                     <input
@@ -2460,6 +2725,15 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                       required
                       value={editFee}
                       onChange={(e) => setEditFee(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 box-border"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Rückgabe bis</label>
+                    <input
+                      type="date"
+                      value={editDueDate}
+                      onChange={(e) => setEditDueDate(e.target.value)}
                       className="w-full px-3 py-2 bg-[#252936] border border-slate-700 rounded-xl text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 box-border"
                     />
                   </div>
@@ -2503,13 +2777,11 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                   <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex flex-col gap-2">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
+                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0 flex items-center justify-center">
                           {item.image ? (
                             <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
-                            <div className="w-full h-full flex items-center justify-center text-slate-600">
-                              <Package className="w-4 h-4" />
-                            </div>
+                            <Package className="w-4 h-4 text-slate-600" />
                           )}
                         </div>
                         <div className="min-w-0">
@@ -2524,13 +2796,9 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                         <button
                           type="button"
                           disabled={actionLoading}
-                          onClick={() => {
-                            setExchangeItem(item);
-                            setExchangeCategory(item.category_label || item.category);
-                            setExchangeNote('');
-                          }}
+                          onClick={() => onStartExchange(item)}
                           className="px-2.5 py-1.5 text-xs font-bold text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                          title="Gegen ein anderes Teil austauschen"
+                          title="Gegen ein anderes Teil im Bestand austauschen"
                         >
                           <ArrowRightLeft className="w-3.5 h-3.5" />
                           <span>Tauschen</span>
@@ -2589,65 +2857,17 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
             )}
           </div>
 
-          {/* 2. Verfügbares Equipment hinzufügen */}
-          <div>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                2. Weiteres Teil hinzufügen ({addAvailableItems.length} verfügbar)
-              </h4>
-
-              {/* Kategorie-Filter */}
-              <div className="relative w-44">
-                <select
-                  aria-label="Kategorie filtern"
-                  value={addCategory}
-                  onChange={(e) => setAddCategory(e.target.value)}
-                  className="w-full pl-3 pr-7 py-1.5 bg-[#181B24] border border-slate-700 rounded-lg text-xs font-medium text-slate-300 outline-none appearance-none cursor-pointer"
-                >
-                  <option value="all">Alle Kategorien</option>
-                  {availableCategories.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              </div>
-            </div>
-
-            <div className="mb-2">
-              <input
-                type="text"
-                value={addNote}
-                onChange={(e) => setAddNote(e.target.value)}
-                placeholder="Notiz zum neuen Teil (optional, z.B. nachträgliche Ergänzung)"
-                className="w-full px-3 py-2 bg-[#181B24] border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 outline-none focus:ring-1 focus:ring-blue-500 box-border"
-              />
-            </div>
-
-            {addAvailableItems.length === 0 ? (
-              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl text-center">
-                Keine verfügbaren Teile für diese Kategorie.
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 bg-[#181B24]/50 rounded-xl border border-slate-800">
-                {addAvailableItems.slice(0, 30).map(item => (
-                  <div key={item.id} className="bg-[#181B24] p-2.5 rounded-lg border border-slate-700/60 flex items-center justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
-                      <p className="text-[10px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={actionLoading}
-                      onClick={() => handleExecuteAddItem(item.id)}
-                      className="px-2.5 py-1 text-[11px] font-bold text-blue-300 hover:text-white bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 rounded-md transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>Hinzufügen</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+          {/* 2. Teil hinzufügen (Wechselt in die zentrale Bestandsübersicht) */}
+          <div className="pt-2 border-t border-slate-800">
+            <button
+              type="button"
+              disabled={actionLoading}
+              onClick={onStartAddItem}
+              className="w-full py-3 px-4 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-2xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-50"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Teil hinzufügen (in normaler Bestandsübersicht wählen)</span>
+            </button>
           </div>
 
           {/* 3. Historischer Wechselverlauf dieses Bundles */}
@@ -2660,7 +2880,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                 {returnedHistory.map((ri, i) => (
                   <li key={i} className="flex items-center gap-2 text-[11px] flex-wrap">
                     <span className="w-1.5 h-1.5 rounded-full bg-slate-500 flex-shrink-0"></span>
-                    <span className="text-slate-400">{ri.returned_at}:</span>
+                    <span className="text-slate-400">{formatDateDe(ri.returned_at)}:</span>
                     <span className="font-medium text-white">{ri.item?.category_label || 'Teil'}</span>
                     <span className="text-slate-400">({ri.item?.brand} · Gr. {ri.item?.size} · {ri.item?.item_code})</span>
                     <span className="text-amber-400 font-semibold">zurückgegeben</span>

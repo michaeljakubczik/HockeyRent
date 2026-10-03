@@ -54,6 +54,7 @@ export interface Rental {
   id: number;
   renter_name: string;
   rented_at: string;
+  due_date?: string | null;
   returned_at: string | null;
   paid: boolean;
   fee_total: number;
