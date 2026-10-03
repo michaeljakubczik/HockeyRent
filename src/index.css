@@ -26,3 +26,37 @@
     @apply antialiased bg-[#1C1F2A] text-slate-200 min-h-screen;
   }
 }
+
+/* Horizontale Equipment-Galerie */
+.horizontal-gallery {
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  flex-wrap: nowrap;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+.horizontal-gallery::-webkit-scrollbar {
+  height: 6px;
+}
+
+.horizontal-gallery::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.horizontal-gallery::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.35);
+  border-radius: 9999px;
+}
+
+.horizontal-gallery::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.65);
+}
+
+.horizontal-gallery-item {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+}

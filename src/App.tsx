@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Plus,
   Package,
@@ -18,6 +18,8 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   RotateCcw,
   Layers,
   ArrowRight,
@@ -924,6 +926,29 @@ export default function App() {
     return acc;
   }, {} as Record<string, EquipmentItem[]>);
 
+  // Dynamische Kategorienliste der aktuell vorhandenen Gruppen
+  const currentCategoryList = Object.keys(groupedItems);
+
+  // Prüfen, ob alle aktuell vorhandenen Kategorien geöffnet sind
+  const allCategoriesOpen = 
+    currentCategoryList.length > 0 && 
+    currentCategoryList.every(cat => !collapsedCategories[cat]);
+
+  // Globaler Toggle für alle Kategorien: "Alle öffnen" bzw. "Alle schließen"
+  const handleToggleAllCategories = () => {
+    const next: Record<string, boolean> = { ...collapsedCategories };
+    const targetCollapsed = allCategoriesOpen; // Wenn alle offen sind -> auf true (schließen) setzen, sonst auf false (öffnen)
+    currentCategoryList.forEach(cat => {
+      next[cat] = targetCollapsed;
+    });
+    // Dynamisch auch für alle anderen im Bestand vorhandenen Kategorien berücksichtigen
+    items.forEach(i => {
+      const cat = i.category_label || i.category;
+      if (cat) next[cat] = targetCollapsed;
+    });
+    setCollapsedCategories(next);
+  };
+
   // Split rentals into Aktuell (returned_at === null) and Abgeschlossen (returned_at !== null)
   const activeRentals = history.filter(r => !r.returned_at);
   const completedRentals = history.filter(r => !!r.returned_at);
@@ -1311,6 +1336,38 @@ export default function App() {
                 />
               ) : (
                 <div className="space-y-4">
+                  {/* Kompakte globale Accordion-Steuerung: Alle öffnen / Alle schließen */}
+                  <div className="flex items-center justify-between px-1 py-1">
+                    <div className="text-xs text-slate-400 font-medium flex items-center gap-2">
+                      <span className="font-semibold text-slate-300">
+                        {currentCategoryList.length} {currentCategoryList.length === 1 ? 'Kategorie' : 'Kategorien'}
+                      </span>
+                      <span className="text-slate-600">·</span>
+                      <span>
+                        {displayedItems.length} {displayedItems.length === 1 ? 'Teil' : 'Teile'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleToggleAllCategories}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-300 hover:text-white bg-[#252936] hover:bg-[#282D3B] border border-slate-700/80 transition-all shadow-sm cursor-pointer active:scale-95"
+                      title={allCategoriesOpen ? "Alle Kategorien schließen" : "Alle Kategorien öffnen"}
+                    >
+                      {allCategoriesOpen ? (
+                        <>
+                          <ChevronUp className="w-3.5 h-3.5 text-blue-400" />
+                          <span>Alle schließen</span>
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-3.5 h-3.5 text-blue-400" />
+                          <span>Alle öffnen</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
                   {Object.entries(groupedItems)
                     .sort(([a], [b]) => a.localeCompare(b, 'de'))
                     .map(([category, catItems]) => {
@@ -1361,63 +1418,33 @@ export default function App() {
                           </button>
 
                           {!isCollapsed && (
-                            <div className="p-3.5 sm:p-5 pt-1 border-t border-slate-800/80">
-                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-                                {catItems
-                                  .sort((a, b) => {
-                                    const sizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
-                                    const aIdx = sizeOrder.indexOf(a.size.toUpperCase());
-                                    const bIdx = sizeOrder.indexOf(b.size.toUpperCase());
-                                    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
-                                    return a.size.localeCompare(b.size);
-                                  })
-                                  .map(item => (
-                                    <ItemCard
-                                      key={item.id}
-                                      item={item}
-                                      exchangeMode={!!bundleExchange}
-                                      onSelectExchange={
-                                        bundleExchange
-                                          ? () => handleSelectExchangeReplacement(item)
-                                          : undefined
-                                      }
-                                      addMode={!!bundleAdd}
-                                      onSelectAdd={
-                                        bundleAdd
-                                          ? () => handleSelectAddEquipment(item)
-                                          : undefined
-                                      }
-                                      onRent={() => {
-                                        setRentingItem(item);
-                                        const today = new Date().toISOString().split('T')[0];
-                                        setRentForm({
-                                          item_ids: [item.id],
-                                          renter_name: '',
-                                          rented_at: today,
-                                          due_date: calculateDueDate(today),
-                                          paid: false,
-                                          fee_total: 60,
-                                          note: ''
-                                        });
-                                      }}
-                                      onReturn={() => {
-                                        if (item.active_rental_id) {
-                                          handleReturnSingleItemFromBundle(item.active_rental_id, item.id);
-                                        }
-                                      }}
-                                      onMarkPaid={(paidState?: boolean) => {
-                                        if (item.active_rental_id) {
-                                          handleMarkAsPaid(item.active_rental_id, paidState !== undefined ? paidState : !item.bezahlt);
-                                        }
-                                      }}
-                                      onEdit={() => { setEditItem(item); setCurrentView('add'); }}
-                                      onDelete={() => handleDeleteItem(item.id)}
-                                      onToggleBag={() => toggleBag(item)}
-                                      inBag={bag.some(b => b.id === item.id)}
-                                    />
-                                  ))}
-                              </div>
-                            </div>
+                            <CategoryGalleryRow
+                              category={category}
+                              items={catItems}
+                              bag={bag}
+                              bundleExchange={bundleExchange}
+                              bundleAdd={bundleAdd}
+                              onSelectExchange={handleSelectExchangeReplacement}
+                              onSelectAdd={handleSelectAddEquipment}
+                              onRent={(item) => {
+                                setRentingItem(item);
+                                const today = new Date().toISOString().split('T')[0];
+                                setRentForm({
+                                  item_ids: [item.id],
+                                  renter_name: '',
+                                  rented_at: today,
+                                  due_date: calculateDueDate(today),
+                                  paid: false,
+                                  fee_total: 60,
+                                  note: ''
+                                });
+                              }}
+                              onReturn={handleReturnSingleItemFromBundle}
+                              onMarkPaid={handleMarkAsPaid}
+                              onEdit={(item) => { setEditItem(item); setCurrentView('add'); }}
+                              onDelete={handleDeleteItem}
+                              onToggleBag={toggleBag}
+                            />
                           )}
                         </div>
                       );
@@ -2017,7 +2044,7 @@ const ItemCard: React.FC<ItemCardProps> = ({
   const isRented = item.status === 'verliehen';
 
   return (
-    <div className={`bg-[#252936] rounded-2xl border shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col ${
+    <div className={`bg-[#252936] rounded-2xl border shadow-lg hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col h-full w-full ${
       isRented ? 'border-amber-500/30' : inBag ? 'border-blue-500 ring-1 ring-blue-500/40' : 'border-slate-700/60'
     }`}>
       {/* Top right actions (Edit & Delete) */}
@@ -2176,6 +2203,156 @@ const ItemCard: React.FC<ItemCardProps> = ({
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// CATEGORY GALLERY ROW COMPONENT (Kompakte horizontale Equipment-Galerie pro Kategorie)
+interface CategoryGalleryRowProps {
+  category: string;
+  items: EquipmentItem[];
+  bag: EquipmentItem[];
+  bundleExchange: {
+    rentalId: number;
+    rental: Rental;
+    oldItem: EquipmentItem;
+  } | null;
+  bundleAdd: {
+    rentalId: number;
+    rental: Rental;
+  } | null;
+  onSelectExchange?: (item: EquipmentItem) => void;
+  onSelectAdd?: (item: EquipmentItem) => void;
+  onRent: (item: EquipmentItem) => void;
+  onReturn: (rentalId: number, itemId: number) => void;
+  onMarkPaid: (rentalId: number, paid?: boolean) => void;
+  onEdit: (item: EquipmentItem) => void;
+  onDelete: (itemId: number) => void;
+  onToggleBag: (item: EquipmentItem) => void;
+}
+
+const CategoryGalleryRow: React.FC<CategoryGalleryRowProps> = ({
+  category,
+  items,
+  bag,
+  bundleExchange,
+  bundleAdd,
+  onSelectExchange,
+  onSelectAdd,
+  onRent,
+  onReturn,
+  onMarkPaid,
+  onEdit,
+  onDelete,
+  onToggleBag
+}) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  // Bestehende Größensortierung beibehalten (JR, SR, XS, S, M, L, XL, XXL ...)
+  const sortedItems = [...items].sort((a, b) => {
+    const sizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
+    const aIdx = sizeOrder.indexOf(a.size.toUpperCase());
+    const bIdx = sizeOrder.indexOf(b.size.toUpperCase());
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    return a.size.localeCompare(b.size);
+  });
+
+  const checkScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const hasOverflow = el.scrollWidth > el.clientWidth + 5;
+    setCanScrollLeft(el.scrollLeft > 10);
+    setCanScrollRight(hasOverflow && el.scrollLeft + el.clientWidth < el.scrollWidth - 10);
+  }, []);
+
+  useEffect(() => {
+    checkScroll();
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    el.addEventListener('scroll', checkScroll, { passive: true });
+    window.addEventListener('resize', checkScroll);
+    return () => {
+      el.removeEventListener('scroll', checkScroll);
+      window.removeEventListener('resize', checkScroll);
+    };
+  }, [items.length, checkScroll]);
+
+  const handleScroll = (direction: 'left' | 'right') => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const scrollAmount = Math.max(el.clientWidth * 0.75, 240);
+    el.scrollBy({
+      left: direction === 'left' ? -scrollAmount : scrollAmount,
+      behavior: 'smooth'
+    });
+  };
+
+  return (
+    <div className="relative group/gallery p-3.5 sm:p-5 pt-2 border-t border-slate-800/80">
+      {/* Dezenter Navigationsbutton Links (Desktop/Maus-Komfort) */}
+      {canScrollLeft && (
+        <button
+          type="button"
+          onClick={() => handleScroll('left')}
+          className="hidden sm:flex absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-[#181B24]/95 hover:bg-[#252936] text-white border border-slate-700 shadow-xl items-center justify-center transition-all cursor-pointer backdrop-blur-sm active:scale-90"
+          title="Nach links scrollen"
+          aria-label="Nach links scrollen"
+        >
+          <ChevronLeft className="w-4 h-4 text-slate-200" />
+        </button>
+      )}
+
+      {/* Dezenter Navigationsbutton Rechts (Desktop/Maus-Komfort) */}
+      {canScrollRight && (
+        <button
+          type="button"
+          onClick={() => handleScroll('right')}
+          className="hidden sm:flex absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-[#181B24]/95 hover:bg-[#252936] text-white border border-slate-700 shadow-xl items-center justify-center transition-all cursor-pointer backdrop-blur-sm active:scale-90"
+          title="Nach rechts scrollen"
+          aria-label="Nach rechts scrollen"
+        >
+          <ChevronRight className="w-4 h-4 text-slate-200" />
+        </button>
+      )}
+
+      {/* Horizontale Equipment-Galerie mit nativem Touch-Scroll & Snap */}
+      <div
+        ref={scrollContainerRef}
+        className="horizontal-gallery flex gap-3 sm:gap-4 overflow-x-auto overflow-y-hidden pb-3 pt-1 px-1 scroll-smooth overscroll-x-contain"
+      >
+        {sortedItems.map(item => (
+          <div
+            key={item.id}
+            className="horizontal-gallery-item w-[210px] sm:w-[230px] md:w-[245px] lg:w-[255px] flex-shrink-0 flex flex-col"
+          >
+            <ItemCard
+              item={item}
+              exchangeMode={!!bundleExchange}
+              onSelectExchange={bundleExchange && onSelectExchange ? () => onSelectExchange(item) : undefined}
+              addMode={!!bundleAdd}
+              onSelectAdd={bundleAdd && onSelectAdd ? () => onSelectAdd(item) : undefined}
+              onRent={() => onRent(item)}
+              onReturn={() => {
+                if (item.active_rental_id) {
+                  onReturn(item.active_rental_id, item.id);
+                }
+              }}
+              onMarkPaid={(paidState?: boolean) => {
+                if (item.active_rental_id) {
+                  onMarkPaid(item.active_rental_id, paidState !== undefined ? paidState : !item.bezahlt);
+                }
+              }}
+              onEdit={() => onEdit(item)}
+              onDelete={() => onDelete(item.id)}
+              onToggleBag={() => onToggleBag(item)}
+              inBag={bag.some(b => b.id === item.id)}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );
