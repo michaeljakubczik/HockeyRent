@@ -23,10 +23,15 @@ import {
   RotateCcw,
   Layers,
   ArrowRight,
-  Search
+  Search,
+  FileText,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { EquipmentItem, View, Rental, EquipmentCategory } from './types';
+import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 
 const API_BASE = '/api';
 
@@ -59,6 +64,27 @@ export function formatDateDe(dateStr?: string | null): string {
     return `${match[3]}.${match[2]}.${match[1]}`;
   }
   return dateStr;
+}
+
+// IBAN formatieren in 4er-Blöcke (z. B. DE89 3705 0198 0000 0123 45)
+export function formatIban(val: string): string {
+  if (!val) return '';
+  const clean = val.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 34);
+  const parts: string[] = [];
+  for (let i = 0; i < clean.length; i += 4) {
+    parts.push(clean.substring(i, i + 4));
+  }
+  return parts.join(' ');
+}
+
+// IBAN zum Datenschutz maskieren (z. B. DE89 •••• •••• •••• 3456)
+export function maskIban(iban: string): string {
+  if (!iban) return '';
+  const clean = iban.replace(/\s+/g, '').toUpperCase();
+  if (clean.length < 8) return clean;
+  const start = clean.slice(0, 4);
+  const end = clean.slice(-4);
+  return `${start} •••• •••• •••• ${end}`;
 }
 
 const CATEGORIES: { label: string, value: EquipmentCategory, type: 'Feldspieler' | 'Goalie' }[] = [
@@ -112,6 +138,13 @@ export default function App() {
   const [rentingItem, setRentingItem] = useState<EquipmentItem | null>(null);
   const [editingBundleRental, setEditingBundleRental] = useState<Rental | null>(null);
 
+  // Digitaler Ausleihvertrag (Phase 1: Einverständniserklärung)
+  const [contractModal, setContractModal] = useState<{
+    isOpen: boolean;
+    rentalId: number;
+    mode: 'form' | 'preview';
+  } | null>(null);
+
   // Spezialmodi für Bundle-Bearbeitung über den normalen zentralen Bestand
   const [bundleExchange, setBundleExchange] = useState<{
     rentalId: number;
@@ -124,6 +157,10 @@ export default function App() {
     rentalId: number;
     rental: Rental;
   } | null>(null);
+
+  // Zielkategorie für automatisches Scrollen (ausschließlich beim Start eines Austauschs)
+  const [autoScrollTargetCategory, setAutoScrollTargetCategory] = useState<string | null>(null);
+  const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
@@ -259,6 +296,42 @@ export default function App() {
       fetchPublicItems();
     }
   }, []);
+
+  // Automatisches Scrollen zur auszutauschenden Kategorie (nur gezielt beim Start eines Austauschs)
+  useEffect(() => {
+    if (!autoScrollTargetCategory || currentView !== 'available') return;
+
+    let timeoutId: any;
+    const performScroll = () => {
+      const targetCat = autoScrollTargetCategory;
+      if (!targetCat) return;
+
+      const targetEl = 
+        categoryRefs.current[targetCat] ||
+        document.getElementById(`category-section-${targetCat.replace(/\s+/g, '-')}`);
+
+      if (targetEl) {
+        targetEl.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        });
+        setAutoScrollTargetCategory(null);
+      }
+    };
+
+    // Zwei requestAnimationFrames stellen sicher, dass das Rendering abgeschlossen ist
+    const rAF = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        performScroll();
+        timeoutId = setTimeout(performScroll, 80);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(rAF);
+      clearTimeout(timeoutId);
+    };
+  }, [autoScrollTargetCategory, currentView, displayedItems.length]);
 
   const fetchPublicItems = async () => {
     try {
@@ -415,11 +488,20 @@ export default function App() {
         })
       });
       if (res.ok) {
+        const data = await res.json();
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setBag([]);
         fetchItems(password);
-        setCurrentView('available');
+        setCurrentView('rentals');
+        setRentalsSubTab('active');
+        if (data.rentalId) {
+          setContractModal({
+            isOpen: true,
+            rentalId: data.rentalId,
+            mode: 'form'
+          });
+        }
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Verleihen');
@@ -640,6 +722,9 @@ export default function App() {
       }
     });
     setCollapsedCategories(newCollapsed);
+
+    // Automatisches Scrollen gezielt für diese Austauschkategorie vormerken
+    setAutoScrollTargetCategory(oldCat);
   };
 
   // 2. Teil-Hinzufügen-Modus starten:
@@ -652,6 +737,7 @@ export default function App() {
       rental
     });
     setBundleExchange(null);
+    setAutoScrollTargetCategory(null);
 
     setCurrentView('available');
 
@@ -680,6 +766,7 @@ export default function App() {
     const targetRentalId = bundleExchange?.rentalId || bundleAdd?.rentalId;
     setBundleExchange(null);
     setBundleAdd(null);
+    setAutoScrollTargetCategory(null);
 
     setStatusFilter('all');
     setCategoryFilter('all');
@@ -696,6 +783,7 @@ export default function App() {
   const handleSelectExchangeReplacement = async (newItem: EquipmentItem) => {
     if (!bundleExchange) return;
     const { rentalId, oldItem } = bundleExchange;
+    setAutoScrollTargetCategory(null);
 
     setLoading(true);
     setError(null);
@@ -1378,7 +1466,9 @@ export default function App() {
                       return (
                         <div 
                           key={category} 
-                          className="bg-[#252936] rounded-2xl border border-slate-700/60 overflow-hidden shadow-md transition-all"
+                          ref={el => { categoryRefs.current[category] = el; }}
+                          id={`category-section-${category.replace(/\s+/g, '-')}`}
+                          className="bg-[#252936] rounded-2xl border border-slate-700/60 overflow-hidden shadow-md transition-all scroll-mt-20 sm:scroll-mt-24"
                         >
                           <button
                             type="button"
@@ -1688,6 +1778,7 @@ export default function App() {
                         onAddItem={() => startAddItem(rental)}
                         onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
+                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract ? 'preview' : 'form' })}
                       />
                     ))
                   )}
@@ -1708,6 +1799,7 @@ export default function App() {
                         onToggle={() => toggleRentalAccordion(rental.id, false)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
+                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: 'preview' })}
                       />
                     ))
                   )}
@@ -1991,6 +2083,31 @@ export default function App() {
             onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(editingBundleRental.id, itemId, note)}
             onUpdateRentalDetails={(updates) => handleUpdateRentalDetails(editingBundleRental.id, updates)}
             onReturnAll={() => handleReturnRental(editingBundleRental.id)}
+            onOpenContract={() => {
+              const rId = editingBundleRental.id;
+              const hasContract = Boolean(editingBundleRental.contract);
+              setEditingBundleRental(null);
+              setContractModal({ isOpen: true, rentalId: rId, mode: hasContract ? 'preview' : 'form' });
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: DIGITALER AUSLEIHVERTRAG (PHASE 1: EINVERSTÄNDNISERKLÄRUNG) */}
+      <AnimatePresence>
+        {contractModal && contractModal.isOpen && (
+          <ContractModal
+            rentalId={contractModal.rentalId}
+            initialMode={contractModal.mode}
+            password={password}
+            onClose={() => setContractModal(null)}
+            onContractSaved={(savedContract) => {
+              setHistory(prev => prev.map(r => r.id === contractModal.rentalId ? { 
+                ...r, 
+                contract: savedContract, 
+                renter_name: `${savedContract.first_name} ${savedContract.last_name}` 
+              } : r));
+            }}
           />
         )}
       </AnimatePresence>
@@ -2048,38 +2165,38 @@ const ItemCard: React.FC<ItemCardProps> = ({
       isRented ? 'border-amber-500/30' : inBag ? 'border-blue-500 ring-1 ring-blue-500/40' : 'border-slate-700/60'
     }`}>
       {/* Top right actions (Edit & Delete) */}
-      <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
+      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all z-20">
         <button 
           onClick={(e) => { e.stopPropagation(); onEdit(); }}
-          className="p-1.5 bg-[#181B24]/90 backdrop-blur-md text-slate-300 hover:text-blue-400 rounded-lg shadow-lg border border-slate-700 cursor-pointer"
+          className="p-1 sm:p-1.5 bg-[#181B24]/90 backdrop-blur-md text-slate-300 hover:text-blue-400 rounded-lg shadow-lg border border-slate-700 cursor-pointer"
           title="Bearbeiten"
         >
-          <Edit className="w-3.5 h-3.5" />
+          <Edit className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
         </button>
         <button 
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          className="p-1.5 bg-[#181B24]/90 backdrop-blur-md text-slate-300 hover:text-red-400 rounded-lg shadow-lg border border-slate-700 cursor-pointer"
+          className="p-1 sm:p-1.5 bg-[#181B24]/90 backdrop-blur-md text-slate-300 hover:text-red-400 rounded-lg shadow-lg border border-slate-700 cursor-pointer"
           title="Löschen"
         >
-          <Trash2 className="w-3.5 h-3.5" />
+          <Trash2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
         </button>
       </div>
 
       {/* Top left status badge */}
-      <div className="absolute top-2 left-2 z-10">
+      <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-10">
         {isRented ? (
-          <span className="bg-amber-500/90 backdrop-blur-sm text-slate-950 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shadow">
+          <span className="bg-amber-500/90 backdrop-blur-sm text-slate-950 px-1.5 sm:px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider shadow">
             Verliehen
           </span>
         ) : (
-          <span className="bg-emerald-600/90 backdrop-blur-sm text-white px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shadow">
+          <span className="bg-emerald-600/90 backdrop-blur-sm text-white px-1.5 sm:px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider shadow">
             Verfügbar
           </span>
         )}
       </div>
       
       {/* Item Image */}
-      <div className="aspect-square bg-[#181B24] relative overflow-hidden">
+      <div className="aspect-square bg-[#181B24] relative overflow-hidden flex-shrink-0">
         {item.image ? (
           <img 
             src={item.image} 
@@ -2092,12 +2209,12 @@ const ItemCard: React.FC<ItemCardProps> = ({
             <ImageIcon className="w-8 h-8" />
           </div>
         )}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-2 pt-4">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] font-black text-white tracking-tight">
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-1.5 sm:p-2 pt-3 sm:pt-4">
+          <div className="flex items-center justify-between gap-1">
+            <span className="text-xs sm:text-[13px] font-black text-white tracking-tight truncate">
               {item.item_code}
             </span>
-            <span className="bg-blue-600 text-white px-1.5 py-0.5 rounded text-[10px] font-bold uppercase">
+            <span className="bg-blue-600 text-white px-1 sm:px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-bold uppercase flex-shrink-0">
               {item.size}
             </span>
           </div>
@@ -2105,39 +2222,42 @@ const ItemCard: React.FC<ItemCardProps> = ({
       </div>
 
       {/* Item Info & Actions */}
-      <div className="p-3 flex-grow flex flex-col justify-between">
-        <div className="mb-2">
-          <h3 className="font-bold text-sm text-white truncate">{item.brand}</h3>
+      <div className="p-2 sm:p-3 flex-grow flex flex-col justify-between min-w-0">
+        <div className="mb-1.5 sm:mb-2 min-w-0">
+          <h3 className="font-bold text-xs sm:text-sm text-white truncate" title={item.brand}>{item.brand}</h3>
           
           {/* Kategorie und Verleihcounter pro Equipment (nur interne Verwaltung, dezent) */}
           <div className="flex items-center justify-between gap-1 mt-0.5">
-            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate">{item.category_label}</p>
+            <p className="text-[9px] sm:text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate" title={item.category_label}>
+              {item.category_label}
+            </p>
             {item.rental_count !== undefined && (
               <span 
-                className="text-[10px] font-semibold text-slate-400 bg-[#181B24] px-1.5 py-0.5 rounded border border-slate-700/80 flex-shrink-0"
-                title={`${item.rental_count || 0}× bisher verliehen (berechnet aus hockey_rental_items)`}
+                className="text-[9px] sm:text-[10px] font-semibold text-slate-400 bg-[#181B24] px-1 sm:px-1.5 py-0.5 rounded border border-slate-700/80 flex-shrink-0"
+                title={`${item.rental_count || 0}× bisher verliehen`}
               >
-                {item.rental_count || 0}× verliehen
+                <span className="sm:hidden">{item.rental_count || 0}×</span>
+                <span className="hidden sm:inline">{item.rental_count || 0}× verliehen</span>
               </span>
             )}
           </div>
 
           {isRented && item.verliehenAn && (
-            <p className="text-[11px] text-amber-300 font-medium truncate mt-1 flex items-center gap-1" title={`Verliehen an ${item.verliehenAn}`}>
+            <p className="text-[10px] sm:text-[11px] text-amber-300 font-medium truncate mt-0.5 flex items-center gap-1" title={`Verliehen an ${item.verliehenAn}`}>
               <span className="truncate">{item.verliehenAn}</span>
             </p>
           )}
         </div>
         
         {isRented ? (
-          <div className="mt-1 space-y-1.5">
+          <div className="mt-1 space-y-1">
             {item.active_rental_id && onReturn && (
               <button
                 onClick={(e) => { e.stopPropagation(); onReturn(); }}
-                className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer"
+                className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 sm:py-2 rounded-lg active:scale-95 transition-all text-[11px] sm:text-xs flex items-center justify-center gap-1 shadow cursor-pointer"
                 title="Equipment zurücknehmen"
               >
-                <CheckCircle2 className="w-3.5 h-3.5" />
+                <CheckCircle2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0" />
                 <span>Zurück</span>
               </button>
             )}
@@ -2145,18 +2265,18 @@ const ItemCard: React.FC<ItemCardProps> = ({
               item.bezahlt ? (
                 <button
                   onClick={(e) => { e.stopPropagation(); onMarkPaid(false); }}
-                  className="w-full py-1 text-[10px] font-bold text-slate-400 hover:text-slate-300 bg-slate-800/60 hover:bg-slate-800 rounded-md border border-slate-700 transition-all text-center cursor-pointer"
+                  className="w-full py-1 text-[9px] sm:text-[10px] font-bold text-slate-400 hover:text-slate-300 bg-slate-800/60 hover:bg-slate-800 rounded-md border border-slate-700 transition-all text-center cursor-pointer truncate"
                   title="Als offen markieren"
                 >
-                  Als offen markieren
+                  Als offen
                 </button>
               ) : (
                 <button
                   onClick={(e) => { e.stopPropagation(); onMarkPaid(true); }}
-                  className="w-full py-1 text-[10px] font-bold text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 rounded-md border border-amber-500/30 transition-all text-center cursor-pointer"
+                  className="w-full py-1 text-[9px] sm:text-[10px] font-bold text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 rounded-md border border-amber-500/30 transition-all text-center cursor-pointer truncate"
                   title="Als bezahlt markieren"
                 >
-                  Als bezahlt markieren
+                  Als bezahlt
                 </button>
               )
             )}
@@ -2165,41 +2285,41 @@ const ItemCard: React.FC<ItemCardProps> = ({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onSelectExchange?.(); }}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer mt-1"
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-1.5 sm:py-2 px-1 rounded-lg active:scale-95 transition-all text-[10.5px] sm:text-xs flex items-center justify-center gap-1 shadow cursor-pointer mt-1"
             title="Als Ersatz wählen"
           >
-            <ArrowRightLeft className="w-3.5 h-3.5" />
-            <span>Als Ersatz wählen</span>
+            <ArrowRightLeft className="w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0" />
+            <span className="truncate">Als Ersatz wählen</span>
           </button>
         ) : addMode ? (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onSelectAdd?.(); }}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer mt-1"
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-1.5 sm:py-2 px-1 rounded-lg active:scale-95 transition-all text-[11px] sm:text-xs flex items-center justify-center gap-1 shadow cursor-pointer mt-1"
             title="Hinzufügen"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0" />
             <span>Hinzufügen</span>
           </button>
         ) : (
-          <div className="flex gap-1.5 mt-1">
+          <div className="flex gap-1 sm:gap-1.5 mt-1">
             <button
               onClick={onToggleBag}
-              className={`flex-1 p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer ${
+              className={`p-1.5 sm:p-2 rounded-lg transition-all flex items-center justify-center cursor-pointer flex-shrink-0 ${
                 inBag 
                   ? 'bg-blue-600 text-white shadow-inner' 
                   : 'bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25'
               }`}
               title={inBag ? "Aus Tasche entfernen" : "In Tasche hinzufügen"}
             >
-              {inBag ? <CheckCircle2 className="w-4 h-4" /> : <ShoppingBag className="w-4 h-4" />}
+              {inBag ? <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <ShoppingBag className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
             </button>
             <button
               onClick={onRent}
-              className="flex-[2] bg-slate-100 hover:bg-white text-[#1C1F2A] font-bold py-2 rounded-lg active:scale-95 transition-all text-xs flex items-center justify-center gap-1.5 shadow cursor-pointer"
+              className="flex-1 min-w-0 bg-slate-100 hover:bg-white text-[#1C1F2A] font-bold py-1.5 sm:py-2 px-1.5 rounded-lg active:scale-95 transition-all text-[11px] sm:text-xs flex items-center justify-center gap-1 shadow cursor-pointer"
             >
-              <ArrowRightLeft className="w-3.5 h-3.5" />
-              <span>Leihen</span>
+              <ArrowRightLeft className="w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0" />
+              <span className="truncate">Leihen</span>
             </button>
           </div>
         )}
@@ -2292,7 +2412,7 @@ const CategoryGalleryRow: React.FC<CategoryGalleryRowProps> = ({
   };
 
   return (
-    <div className="relative group/gallery p-3.5 sm:p-5 pt-2 border-t border-slate-800/80">
+    <div className="relative group/gallery p-2.5 sm:p-5 pt-2 border-t border-slate-800/80">
       {/* Dezenter Navigationsbutton Links (Desktop/Maus-Komfort) */}
       {canScrollLeft && (
         <button
@@ -2322,12 +2442,12 @@ const CategoryGalleryRow: React.FC<CategoryGalleryRowProps> = ({
       {/* Horizontale Equipment-Galerie mit nativem Touch-Scroll & Snap */}
       <div
         ref={scrollContainerRef}
-        className="horizontal-gallery flex gap-3 sm:gap-4 overflow-x-auto overflow-y-hidden pb-3 pt-1 px-1 scroll-smooth overscroll-x-contain"
+        className="horizontal-gallery flex gap-2 sm:gap-4 overflow-x-auto overflow-y-hidden pb-3 pt-1 px-0.5 sm:px-1 scroll-smooth overscroll-x-contain"
       >
         {sortedItems.map(item => (
           <div
             key={item.id}
-            className="horizontal-gallery-item w-[210px] sm:w-[230px] md:w-[245px] lg:w-[255px] flex-shrink-0 flex flex-col"
+            className="horizontal-gallery-item w-[clamp(130px,calc((100vw-4.25rem)/2.5),180px)] sm:w-[230px] md:w-[245px] lg:w-[255px] flex-shrink-0 flex flex-col"
           >
             <ItemCard
               item={item}
@@ -2370,6 +2490,7 @@ interface ActiveRentalCardProps {
   onAddItem: () => void;
   onEditBundle: () => void;
   onDelete: () => void;
+  onOpenContract: () => void;
 }
 
 const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
@@ -2382,7 +2503,8 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   onExchangeItem,
   onAddItem,
   onEditBundle,
-  onDelete
+  onDelete,
+  onOpenContract
 }) => {
   const activeItems = rental.items || [];
   const itemCount = activeItems.length;
@@ -2417,6 +2539,13 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          {rental.contract && (
+            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
+              <FileText className="w-3 h-3 text-indigo-400" />
+              <span>Vertrag</span>
+            </span>
+          )}
+
           {rental.paid ? (
             <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
               Bezahlt
@@ -2574,6 +2703,15 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={onOpenContract}
+                className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                title="Einverständniserklärung / Ausleihvertrag anzeigen oder ausfüllen"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag anlegen'}</span>
+              </button>
+              <button
+                type="button"
                 onClick={onAddItem}
                 className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
               >
@@ -2620,6 +2758,7 @@ interface CompletedRentalCardProps {
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
   onDelete: () => void;
+  onOpenContract?: () => void;
 }
 
 const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
@@ -2627,7 +2766,8 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   isExpanded,
   onToggle,
   onMarkAsPaid,
-  onDelete
+  onDelete,
+  onOpenContract
 }) => {
   // Für abgeschlossene Ausleihen: Immer alle historischen Teile anzeigen
   const allItems = rental.all_items || rental.items || rental.all_rental_items?.map(ri => ri.item).filter((i): i is EquipmentItem => Boolean(i)) || [];
@@ -2654,6 +2794,13 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+          {rental.contract && (
+            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
+              <FileText className="w-3 h-3 text-indigo-400" />
+              <span>Vertrag</span>
+            </span>
+          )}
+
           {rental.paid ? (
             <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
               Bezahlt
@@ -2695,6 +2842,18 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
+              {onOpenContract && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-indigo-300 bg-indigo-500/20 hover:bg-indigo-500/30 border-indigo-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Vertrag anzeigen"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag nachtragen'}</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
@@ -2783,6 +2942,7 @@ interface BundleEditorModalProps {
   onReturnSingleItem: (itemId: number, note?: string) => Promise<void>;
   onUpdateRentalDetails?: (updates: { renter_name?: string; fee_total?: number; note?: string; due_date?: string }) => Promise<void>;
   onReturnAll: () => Promise<void>;
+  onOpenContract?: () => void;
 }
 
 const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
@@ -2792,7 +2952,8 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
   onStartAddItem,
   onReturnSingleItem,
   onUpdateRentalDetails,
-  onReturnAll
+  onReturnAll,
+  onOpenContract
 }) => {
   // Single return state (with optional note prompt)
   const [returnItemPromptId, setReturnItemPromptId] = useState<number | null>(null);
@@ -2865,6 +3026,31 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="overflow-y-auto py-4 space-y-6 flex-1 pr-1">
+          {/* Digitaler Vertrag Link */}
+          {onOpenContract && (
+            <div className="bg-[#181B24] p-3.5 rounded-2xl border border-indigo-500/30 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex-shrink-0">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Einverständniserklärung Hockey-Ausrüstung</p>
+                  <p className="text-[11px] text-slate-400 truncate">
+                    {rental.contract ? 'Vertrag vorhanden (Entwurf)' : 'Noch kein Vertrag hinterlegt'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenContract}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all flex items-center gap-1 cursor-pointer flex-shrink-0"
+              >
+                <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag ausfüllen'}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* 1. Aktuell im Bundle */}
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -3085,6 +3271,817 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
           >
             Fertig
           </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+// ==============================================================================
+// 4. CONTRACT MODAL (PHASE 1: EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG)
+// Förderverein der Wiesel Arpke e.V., Am Hainhop 12, 31275 Lehrte
+// ==============================================================================
+interface ContractModalProps {
+  rentalId: number;
+  initialMode?: 'form' | 'preview';
+  password: string;
+  onClose: () => void;
+  onContractSaved?: (contract: RentalContract) => void;
+}
+
+const ContractModal: React.FC<ContractModalProps> = ({
+  rentalId,
+  initialMode = 'form',
+  password,
+  onClose,
+  onContractSaved
+}) => {
+  const [mode, setMode] = useState<'form' | 'preview'>(initialMode);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const [rentalData, setRentalData] = useState<{
+    id: number;
+    renter_name: string;
+    rented_at: string;
+    due_date?: string | null;
+    fee_total: number;
+    active_items: EquipmentItem[];
+  } | null>(null);
+
+  const [existingContract, setExistingContract] = useState<RentalContract | null>(null);
+  const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
+
+  const [formData, setFormData] = useState({
+    first_name: '',
+    last_name: '',
+    child_name: '',
+    street: '',
+    house_number: '',
+    postal_code: '',
+    city: '',
+    phone: '',
+    email: '',
+    iban: '',
+    deposit_amount: 50.00,
+    fee_amount: 60.00
+  });
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadContractData() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract`, {
+          headers: { 'x-admin-password': password }
+        });
+        const data = await res.json();
+        if (!isMounted) return;
+
+        if (res.ok && data.success) {
+          setRentalData(data.rental);
+          if (data.contract) {
+            setExistingContract(data.contract);
+            setFormData({
+              first_name: data.contract.first_name || '',
+              last_name: data.contract.last_name || '',
+              child_name: data.contract.child_name || '',
+              street: data.contract.street || '',
+              house_number: data.contract.house_number || '',
+              postal_code: data.contract.postal_code || '',
+              city: data.contract.city || '',
+              phone: data.contract.phone || '',
+              email: data.contract.email || '',
+              iban: formatIban(data.contract.iban || ''),
+              deposit_amount: data.contract.deposit_amount !== undefined ? Number(data.contract.deposit_amount) : 50.00,
+              fee_amount: data.contract.fee_amount !== undefined ? Number(data.contract.fee_amount) : (data.rental?.fee_total || 60.00)
+            });
+            if (initialMode === 'preview') {
+              setMode('preview');
+            }
+          } else {
+            // Neuer Vertragsentwurf: Namen des Ausleihers vorbelegen
+            const renter = data.rental?.renter_name || '';
+            const parts = renter.trim().split(' ');
+            const fName = parts[0] || '';
+            const lName = parts.slice(1).join(' ') || '';
+            setFormData(prev => ({
+              ...prev,
+              first_name: fName,
+              last_name: lName,
+              fee_amount: data.rental?.fee_total !== undefined ? Number(data.rental.fee_total) : 60.00,
+              deposit_amount: 50.00
+            }));
+            setMode('form');
+          }
+        } else {
+          setError(data.message || 'Vertragsdaten konnten nicht geladen werden.');
+        }
+      } catch (err: any) {
+        if (isMounted) setError('Verbindungsfehler beim Laden der Vertragsdaten.');
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadContractData();
+    return () => { isMounted = false; };
+  }, [rentalId, password, initialMode]);
+
+  const handleIbanChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const formatted = formatIban(e.target.value);
+    setFormData(prev => ({ ...prev, iban: formatted }));
+  };
+
+  const handleSaveContract = async (e?: React.FormEvent, targetMode: 'stay' | 'preview' = 'preview') => {
+    if (e) e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    // Validierung der Pflichtfelder
+    if (!formData.first_name.trim() || !formData.last_name.trim() || !formData.child_name.trim()) {
+      setError('Bitte Vorname, Nachname und den Namen des Kindes ausfüllen.');
+      return;
+    }
+    if (!formData.street.trim() || !formData.house_number.trim() || !formData.postal_code.trim() || !formData.city.trim()) {
+      setError('Bitte die Anschrift vollständig angeben (Straße, Hausnr., PLZ und Ort).');
+      return;
+    }
+    if (!formData.phone.trim()) {
+      setError('Bitte eine Telefonnummer für eventuelle Rückfragen angeben.');
+      return;
+    }
+    const cleanEmail = formData.email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setError('Bitte eine gültige E-Mail-Adresse angeben.');
+      return;
+    }
+    const cleanIban = formData.iban.replace(/\s+/g, '').toUpperCase();
+    if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
+      setError('Bitte eine gültige IBAN angeben (mindestens 15 Zeichen, z. B. DE...).');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        },
+        body: JSON.stringify({
+          first_name: formData.first_name.trim(),
+          last_name: formData.last_name.trim(),
+          child_name: formData.child_name.trim(),
+          street: formData.street.trim(),
+          house_number: formData.house_number.trim(),
+          postal_code: formData.postal_code.trim(),
+          city: formData.city.trim(),
+          phone: formData.phone.trim(),
+          email: cleanEmail,
+          iban: cleanIban,
+          deposit_amount: formData.deposit_amount,
+          fee_amount: formData.fee_amount,
+          status: 'draft'
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExistingContract(data.contract);
+        setSuccess('Vertragsdaten erfolgreich gespeichert!');
+        if (onContractSaved) {
+          onContractSaved(data.contract);
+        }
+        if (targetMode === 'preview') {
+          setMode('preview');
+        }
+      } else {
+        setError(data.message || 'Fehler beim Speichern des Vertragsentwurfs.');
+      }
+    } catch (err: any) {
+      setError('Verbindungsfehler beim Speichern des Vertrags.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const equipmentList = existingContract?.equipment_snapshot && existingContract.equipment_snapshot.length > 0
+    ? existingContract.equipment_snapshot
+    : (rentalData?.active_items || []);
+
+  const rentedAtDate = rentalData?.rented_at || new Date().toISOString().split('T')[0];
+  const dueDate = rentalData?.due_date || calculateDueDate(rentedAtDate);
+  const totalAmount = (Number(formData.fee_amount) || 0) + (Number(formData.deposit_amount) || 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-md overflow-y-auto">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-[#1F2330] border border-slate-700/80 rounded-3xl w-full max-w-3xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden my-auto"
+      >
+        {/* MODAL HEADER */}
+        <div className="p-4 sm:p-5 border-b border-slate-800 bg-[#181B24] flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex-shrink-0">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg font-bold text-white truncate">
+                Einverständniserklärung Hockey-Ausrüstung
+              </h3>
+              <p className="text-xs text-slate-400 truncate">
+                Förderverein der Wiesel Arpke e.V. · Ausleihe #{rentalId}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* View Mode Switcher */}
+            <div className="bg-[#252936] p-1 rounded-xl border border-slate-700/70 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setMode('form')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  mode === 'form' 
+                    ? 'bg-blue-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Formular
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('preview')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  mode === 'preview' 
+                    ? 'bg-blue-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>Vorschau</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* FEEDBACK BANNERS */}
+        {error && (
+          <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between gap-2 flex-shrink-0">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        {success && (
+          <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-2 flex-shrink-0">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              <span>{success}</span>
+            </span>
+            <button type="button" onClick={() => setSuccess(null)} className="text-emerald-400 hover:text-emerald-200">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* MODAL BODY */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {loading ? (
+            <div className="py-16 text-center text-slate-400">
+              <p className="animate-pulse text-sm">Lade Vertrags- und Ausleihdaten...</p>
+            </div>
+          ) : mode === 'form' ? (
+            /* ========================================================== */
+            /* 1. EINGABEMASKE (FORMULAR)                                 */
+            /* ========================================================== */
+            <form onSubmit={(e) => handleSaveContract(e, 'preview')} className="space-y-6">
+              {/* Phase 1 Hinweis-Banner */}
+              <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-3">
+                <ShieldCheck className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-slate-300 leading-relaxed">
+                  <strong className="text-blue-300 block mb-0.5">Digitaler Ausleihvertrag (Phase 1)</strong>
+                  Erfasse die individuellen Entleiherdaten. Die tatsächlich ausgeliehenen Equipmentteile und Fristen werden automatisch aus der Ausleihe übernommen. Unterschrift, PDF und Mail folgen in Phase 2.
+                </div>
+              </div>
+
+              {/* SECTION: ENTLEIHER */}
+              <div className="bg-[#181B24] p-4 sm:p-5 rounded-2xl border border-slate-700/60 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span>1. Entleiher (Erziehungsberechtigte/r & Kind)</span>
+                  </h4>
+                  <span className="text-[11px] text-slate-400">* Pflichtfelder</span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                    Name des Kindes (Spieler/in) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.child_name}
+                    onChange={(e) => setFormData({ ...formData, child_name: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                    placeholder="z. B. Tim Mustermann"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Vorname Entleiher *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.first_name}
+                      onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. Max"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Nachname Entleiher *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.last_name}
+                      onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. Mustermann"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: ANSCHRIFT */}
+              <div className="bg-[#181B24] p-4 sm:p-5 rounded-2xl border border-slate-700/60 space-y-4">
+                <div className="border-b border-slate-800 pb-2.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span>2. Anschrift</span>
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3.5">
+                  <div className="col-span-2 sm:col-span-3">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Straße *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.street}
+                      onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. Musterstraße"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Hausnr. *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.house_number}
+                      onChange={(e) => setFormData({ ...formData, house_number: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="12a"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3.5">
+                  <div className="col-span-1">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      PLZ *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.postal_code}
+                      onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="31275"
+                    />
+                  </div>
+                  <div className="col-span-2 sm:col-span-3">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Wohnort *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.city}
+                      onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. Lehrte"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: KONTAKTDATEN */}
+              <div className="bg-[#181B24] p-4 sm:p-5 rounded-2xl border border-slate-700/60 space-y-4">
+                <div className="border-b border-slate-800 pb-2.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span>3. Kontaktdaten</span>
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      Telefonnummer *
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. 0170 1234567"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      E-Mail-Adresse *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all box-border"
+                      placeholder="z. B. max@mustermann.de"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: ZAHLUNGSDATEN (SEPA-LASTSCHRIFT) */}
+              <div className="bg-[#181B24] p-4 sm:p-5 rounded-2xl border border-slate-700/60 space-y-4">
+                <div className="border-b border-slate-800 pb-2.5 flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span>4. Zahlungsdaten (SEPA-Lastschriftmandat)</span>
+                  </h4>
+                  <div className="flex items-center gap-1 text-[11px] text-emerald-400">
+                    <Lock className="w-3 h-3" />
+                    <span>Geschützt</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                    IBAN des Kontoinhabers *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.iban}
+                    onChange={handleIbanChange}
+                    className="w-full px-4 py-3 rounded-xl bg-[#252936] border border-slate-700 text-base font-mono text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-wider box-border"
+                    placeholder="DE00 0000 0000 0000 0000 00"
+                    maxLength={34}
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1.5 ml-1 leading-normal">
+                    Zur Abbuchung der Leihgebühr (60,00 €) und Hinterlegung der Kaution (50,00 €).
+                  </p>
+                </div>
+              </div>
+
+              {/* SECTION: AUTOMATISCH ÜBERNOMMENE AUSLEIHDATEN (READ-ONLY) */}
+              <div className="bg-[#181B24] p-4 sm:p-5 rounded-2xl border border-slate-700/60 space-y-3">
+                <div className="border-b border-slate-800 pb-2.5 flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span>5. Automatisch übernommene Ausrüstung ({equipmentList.length} Teile)</span>
+                  </h4>
+                  <span className="text-[11px] text-emerald-400 font-medium">Aus Vorgang #{rentalId}</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs text-slate-300">
+                  <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
+                    <span className="text-slate-400">Übergabe:</span>
+                    <strong className="text-white">{formatDateDe(rentedAtDate)}</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
+                    <span className="text-slate-400">Rückgabe bis:</span>
+                    <strong className="text-blue-300">{formatDateDe(dueDate)} (6 Mon.)</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
+                    <span className="text-slate-400">Abnutzungsgebühr:</span>
+                    <strong className="text-white">{Number(formData.fee_amount).toFixed(2)} €</strong>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
+                    <span className="text-slate-400">Kaution:</span>
+                    <strong className="text-emerald-300">{Number(formData.deposit_amount).toFixed(2)} €</strong>
+                  </div>
+                </div>
+
+                {/* Equipment Kacheln */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  {equipmentList.map((item: any, idx: number) => (
+                    <div key={item.id || idx} className="p-2.5 rounded-xl bg-[#252936] border border-slate-700/60 flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0">
+                        <p className="font-bold text-white truncate">{item.category_label || item.category}</p>
+                        <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size}</p>
+                      </div>
+                      <span className="font-mono text-[11px] bg-[#181B24] px-2 py-0.5 rounded border border-slate-700 text-slate-300 flex-shrink-0">
+                        {item.item_code}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ACTION BUTTONS (FORM) */}
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-5 py-3 rounded-xl bg-[#181B24] text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Schließen
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => handleSaveContract(undefined, 'stay')}
+                    className="px-4 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    {saving ? 'Speichert...' : 'Als Entwurf speichern'}
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  >
+                    <Eye className="w-4 h-4" />
+                    <span>{saving ? 'Speichert...' : 'Speichern & Vorschau'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          ) : (
+            /* ========================================================== */
+            /* 2. VERTRAGSVORSCHAU (EINVERSTÄNDNISERKLÄRUNG AUSLEIHE)    */
+            /* ========================================================== */
+            <div className="space-y-6">
+              {/* Offizielles Dokumentenblatt */}
+              <div className="bg-[#181B24] p-5 sm:p-8 rounded-2xl border border-slate-700/80 shadow-xl space-y-6 text-slate-200 text-xs sm:text-sm">
+                
+                {/* DOKUMENTEN-KOPFZEILE */}
+                <div className="border-b border-slate-800 pb-5 text-center sm:text-left sm:flex sm:items-start sm:justify-between gap-4">
+                  <div>
+                    <span className="text-[11px] uppercase tracking-widest text-slate-400 font-bold block mb-1">
+                      Förderverein der Wiesel Arpke e.V.
+                    </span>
+                    <h2 className="text-base sm:text-xl font-black text-white tracking-tight">
+                      EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Am Hainhop 12 · 31275 Lehrte · Ausleihe-Nr. #{rentalId}
+                    </p>
+                  </div>
+                  <div className="mt-3 sm:mt-0 flex sm:flex-col items-center sm:items-end justify-center gap-2">
+                    <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      Entwurf (Phase 1)
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      Stand: {formatDateDe(rentedAtDate)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 1. VERTRAGSPARTEIEN */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+                    1. Vertragsparteien
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div className="bg-[#1F2330] p-3.5 rounded-xl border border-slate-800 space-y-1">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Verleiher</span>
+                      <p className="font-bold text-white">Förderverein der Wiesel Arpke e.V.</p>
+                      <p className="text-slate-400">Am Hainhop 12, 31275 Lehrte</p>
+                    </div>
+
+                    <div className="bg-[#1F2330] p-3.5 rounded-xl border border-slate-800 space-y-1">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Entleiher / Erziehungsberechtigte(r)</span>
+                      <p className="font-bold text-white">
+                        {formData.first_name || 'Vorname'} {formData.last_name || 'Nachname'}
+                      </p>
+                      <p className="text-slate-300">
+                        Kind (Spieler/in): <strong className="text-blue-300">{formData.child_name || '—'}</strong>
+                      </p>
+                      <p className="text-slate-400">
+                        {formData.street || 'Straße'} {formData.house_number || ''}, {formData.postal_code || 'PLZ'} {formData.city || 'Ort'}
+                      </p>
+                      <p className="text-slate-400">
+                        Tel.: {formData.phone || '—'} · E-Mail: {formData.email || '—'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. VERLEIHZEITRAUM */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+                    2. Verleihzeitraum & Fristen
+                  </h4>
+                  <div className="bg-[#1F2330] p-3.5 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <span className="text-slate-400 block text-[11px]">Datum der Übergabe:</span>
+                      <strong className="text-white text-sm">{formatDateDe(rentedAtDate)}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[11px]">Geplantes Rückgabedatum (6 Monate):</span>
+                      <strong className="text-blue-300 text-sm">{formatDateDe(dueDate)}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. AUSLEIHE-EQUIPMENT (AUTOMATISCH ÜBERNOMMEN) */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1 flex items-center justify-between">
+                    <span>3. Überlassene Hockey-Ausrüstung</span>
+                    <span className="text-[11px] text-slate-400 lowercase font-normal">
+                      ({equipmentList.length} Gegenstände)
+                    </span>
+                  </h4>
+                  
+                  {equipmentList.length === 0 ? (
+                    <p className="text-xs text-slate-400 italic bg-[#1F2330] p-3 rounded-xl">Keine Equipmentteile zugeordnet.</p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-slate-800">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-[#1F2330] text-slate-400 font-bold uppercase text-[10px] border-b border-slate-800">
+                          <tr>
+                            <th className="py-2.5 px-3 w-8">Pos.</th>
+                            <th className="py-2.5 px-3">Kategorie</th>
+                            <th className="py-2.5 px-3">Marke</th>
+                            <th className="py-2.5 px-3">Größe</th>
+                            <th className="py-2.5 px-3 text-right">Inventar-Code</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/80 bg-[#181B24]">
+                          {equipmentList.map((item: any, idx: number) => (
+                            <tr key={item.id || idx} className="hover:bg-[#1F2330]/50">
+                              <td className="py-2 px-3 text-slate-500 font-mono">{idx + 1}</td>
+                              <td className="py-2 px-3 font-semibold text-white">{item.category_label || item.category}</td>
+                              <td className="py-2 px-3 text-slate-300">{item.brand || '—'}</td>
+                              <td className="py-2 px-3 text-slate-300">{item.size || '—'}</td>
+                              <td className="py-2 px-3 text-right font-mono text-blue-300 font-bold">{item.item_code}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. GEBÜHR & KAUTION */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+                    4. Nutzungsgebühr & Sicherheitsleistung (Kaution)
+                  </h4>
+                  <div className="bg-[#1F2330] p-4 rounded-xl border border-slate-800 space-y-2.5 text-xs">
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span>Abnutzungsgebühr (Bundle für sechs Monate):</span>
+                      <strong className="text-white font-mono">{Number(formData.fee_amount).toFixed(2)} €</strong>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span>Sicherheitsleistung / Kaution:</span>
+                      <strong className="text-emerald-300 font-mono">{Number(formData.deposit_amount).toFixed(2)} €</strong>
+                    </div>
+                    <div className="pt-2 border-t border-slate-700/80 flex justify-between items-center text-sm font-bold">
+                      <span className="text-white">Gesamtbetrag (Zahlung per SEPA-Lastschrift):</span>
+                      <span className="text-blue-300 font-mono text-base">{totalAmount.toFixed(2)} €</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 pt-1 leading-normal italic">
+                      Hinweis: Die Kaution in Höhe von 50,00 € wird nach ordnungsgemäßer, unbeschädigter und vollständiger Rückgabe des Equipments unverzüglich erstattet.
+                    </p>
+                  </div>
+                </div>
+
+                {/* 5. SEPA-LASTSCHRIFTMANDAT */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1 flex items-center justify-between">
+                    <span>5. SEPA-Lastschriftmandat</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowFullIbanInPreview(!showFullIbanInPreview)}
+                      className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                    >
+                      {showFullIbanInPreview ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      <span>{showFullIbanInPreview ? 'IBAN verbergen' : 'IBAN anzeigen'}</span>
+                    </button>
+                  </h4>
+                  <div className="bg-[#1F2330] p-4 rounded-xl border border-slate-800 text-xs text-slate-300 space-y-2.5">
+                    <p className="leading-relaxed">
+                      Ich ermächtige den <strong>Förderverein der Wiesel Arpke e.V.</strong>, Zahlungen von meinem Konto mittels Lastschrift einzuziehen. Zugleich weise ich mein Kreditinstitut an, die vom Förderverein auf mein Konto gezogenen Lastschriften einzulösen.
+                    </p>
+                    <div className="p-2.5 rounded-lg bg-[#181B24] border border-slate-700/60 flex items-center justify-between">
+                      <span className="text-slate-400 font-bold uppercase text-[10px]">IBAN:</span>
+                      <span className="font-mono text-white tracking-widest text-xs sm:text-sm">
+                        {formData.iban ? (showFullIbanInPreview ? formData.iban : maskIban(formData.iban)) : '—'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 6. VEREINBARUNGEN / VERLEIHBEDINGUNGEN */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+                    6. Verleihbedingungen & Vereinbarungen
+                  </h4>
+                  <ol className="list-decimal list-inside space-y-1.5 text-xs text-slate-300 leading-relaxed bg-[#1F2330] p-4 rounded-xl border border-slate-800">
+                    <li>Die Ausrüstung bleibt uneingeschränktes Eigentum des Fördervereins der Wiesel Arpke e.V.</li>
+                    <li>Die Ausrüstung darf ausschließlich für den regulären Hockey-Trainings- und Spielbetrieb genutzt werden.</li>
+                    <li>Die Ausrüstung ist sachgerecht zu pflegen und gemäß Herstellerempfehlungen zu reinigen.</li>
+                    <li>Bei Verlust oder Schäden, die über den gewöhnlichen Verschleiß hinausgehen, haftet der Entleiher für den Wiederbeschaffungswert.</li>
+                    <li>Das Equipment ist zum vereinbarten Rückgabetermin vollständig, gereinigt und im guten Zustand zurückzugeben.</li>
+                  </ol>
+                </div>
+
+                {/* 7. UNTERSCHRIFTENBEREICH (PHASE 2 VORSCHAU) */}
+                <div className="pt-4 border-t border-slate-800 space-y-3">
+                  <div className="flex justify-between items-center text-xs text-slate-400">
+                    <span>Ort, Datum: Lehrte, {formatDateDe(rentedAtDate)}</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                    <div className="p-4 rounded-xl border border-slate-800 bg-[#1F2330] text-center space-y-6">
+                      <div className="h-10 flex items-end justify-center">
+                        <span className="text-xs text-slate-400 font-serif italic">Förderverein der Wiesel Arpke e.V.</span>
+                      </div>
+                      <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
+                        Unterschrift Verleiher
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-dashed border-slate-700 bg-[#1F2330] text-center space-y-3">
+                      <div className="h-10 flex flex-col items-center justify-center text-slate-500">
+                        <span className="text-[11px] font-bold text-indigo-300">Digitale Unterschrift</span>
+                        <span className="text-[10px] text-slate-500">Folgt in Phase 2</span>
+                      </div>
+                      <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
+                        Unterschrift Entleiher (gesetzl. Vertreter)
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* ACTION BUTTONS (PREVIEW) */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setMode('form')}
+                  className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md"
+                >
+                  <Edit className="w-4 h-4" />
+                  <span>Daten bearbeiten</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-6 py-3 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                >
+                  Schließen
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </motion.div>
     </div>

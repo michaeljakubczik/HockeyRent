@@ -781,6 +781,21 @@ function calculateDueDate(startDateStr: string): string {
         }
       }
 
+      // Verträge laden, um in der Verleihliste den Status anzuzeigen
+      let contractsMap: Record<number, any> = {};
+      try {
+        const { data: contractsData } = await supabase
+          .from('hockey_rental_contracts')
+          .select('id, rental_id, status, updated_at, created_at, first_name, last_name, child_name');
+        if (contractsData) {
+          contractsData.forEach((c: any) => {
+            contractsMap[c.rental_id] = c;
+          });
+        }
+      } catch (e) {
+        // Ignorieren falls nicht verfügbar
+      }
+
       const transformed = data.map((rental: any) => {
         const allRentalItems = (rental.hockey_rental_items || rental.rental_items) || [];
         
@@ -813,13 +828,208 @@ function calculateDueDate(startDateStr: string): string {
           items: rental.returned_at ? allItems : activeItems,
           active_items: activeItems,
           all_items: allItems,
-          all_rental_items: allItemsRecord
+          all_rental_items: allItemsRecord,
+          contract: contractsMap[rental.id] || null
         };
       });
 
       res.json(transformed);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==============================================================================
+  // VERTRAGSMANAGEMENT (PHASE 1)
+  // Einverständniserklärung Ausleihe Hockey-Ausrüstung für Spieler
+  // Förderverein der Wiesel Arpke e.V.
+  // ==============================================================================
+
+  // GET /api/rentals/:id/contract - Vertragsdaten zu einer Ausleihe laden
+  app.get("/api/rentals/:id/contract", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const rentalId = Number(req.params.id);
+
+    try {
+      // 1. Ausleihe und aktuelle Ausrüstung prüfen
+      const { data: rental, error: rError } = await supabase
+        .from('hockey_rentals')
+        .select(`
+          id, renter_name, rented_at, due_date, returned_at, fee_total, paid,
+          hockey_rental_items(
+            item_id, returned_at,
+            hockey_equipment_items(id, item_code, brand, size, category_label)
+          )
+        `)
+        .eq('id', rentalId)
+        .single();
+
+      if (rError || !rental) {
+        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
+      }
+
+      // Aktuelle aktive Items der Ausleihe
+      const rItems = (rental.hockey_rental_items || [])
+        .filter((ri: any) => !ri.returned_at)
+        .map((ri: any) => ri.hockey_equipment_items)
+        .filter(Boolean);
+
+      // 2. Vertrag ausschließlich aus der Datenbank laden (hockey_rental_contracts)
+      const { data: cData, error: cError } = await supabase
+        .from('hockey_rental_contracts')
+        .select('*')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (cError) {
+        console.error(`[Contract Fetch Error]: Rental ${rentalId} - ${cError.message}`);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Fehler beim Laden der Vertragsdaten aus der Datenbank." 
+        });
+      }
+
+      res.json({
+        success: true,
+        contract: cData || null,
+        rental: {
+          id: rental.id,
+          renter_name: rental.renter_name,
+          rented_at: rental.rented_at,
+          due_date: rental.due_date,
+          returned_at: rental.returned_at,
+          fee_total: rental.fee_total,
+          active_items: rItems
+        }
+      });
+    } catch (err: any) {
+      console.error(`[Contract Fetch Error]: Rental ${rentalId} - ${err.message}`);
+      res.status(500).json({ success: false, message: "Fehler beim Laden der Vertragsdaten." });
+    }
+  });
+
+  // POST /api/rentals/:id/contract - Vertragsentwurf speichern oder aktualisieren
+  app.post("/api/rentals/:id/contract", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const rentalId = Number(req.params.id);
+    const {
+      first_name,
+      last_name,
+      child_name,
+      street,
+      house_number,
+      postal_code,
+      city,
+      phone,
+      email,
+      iban,
+      deposit_amount,
+      fee_amount,
+      status
+    } = req.body;
+
+    // Validierung aller erforderlichen Felder
+    if (!first_name || !last_name || !child_name || !street || !house_number || !postal_code || !city || !phone || !email || !iban) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Bitte alle Pflichtfelder (Name, Kind, Adresse, Telefon, E-Mail und IBAN) ausfüllen." 
+      });
+    }
+
+    const emailTrimmed = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Bitte eine gültige E-Mail-Adresse angeben." 
+      });
+    }
+
+    const cleanIban = String(iban).replace(/\s+/g, '').toUpperCase();
+    if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Bitte eine gültige IBAN angeben (z. B. DE...)." 
+      });
+    }
+
+    try {
+      // 1. Aktuelle aktive Equipmentteile für den Snapshot ermitteln
+      const { data: riData } = await supabase
+        .from('hockey_rental_items')
+        .select(`
+          item_id,
+          returned_at,
+          hockey_equipment_items(id, item_code, brand, size, category_label)
+        `)
+        .eq('rental_id', rentalId)
+        .is('returned_at', null);
+
+      const equipmentSnapshot = (riData || [])
+        .map((ri: any) => ri.hockey_equipment_items)
+        .filter(Boolean)
+        .map((eq: any) => ({
+          id: eq.id,
+          item_code: eq.item_code,
+          brand: eq.brand,
+          size: eq.size,
+          category_label: eq.category_label
+        }));
+
+      const contractPayload: any = {
+        rental_id: rentalId,
+        first_name: String(first_name).trim(),
+        last_name: String(last_name).trim(),
+        child_name: String(child_name).trim(),
+        street: String(street).trim(),
+        house_number: String(house_number).trim(),
+        postal_code: String(postal_code).trim(),
+        city: String(city).trim(),
+        phone: String(phone).trim(),
+        email: emailTrimmed,
+        iban: cleanIban,
+        deposit_amount: deposit_amount !== undefined ? Number(deposit_amount) : 50.00,
+        fee_amount: fee_amount !== undefined ? Number(fee_amount) : 60.00,
+        equipment_snapshot: equipmentSnapshot,
+        status: status || 'draft',
+        updated_at: new Date().toISOString()
+      };
+
+      // 2. Ausschließlich dauerhaft in Supabase speichern (Upsert über UNIQUE-Constraint auf rental_id)
+      const { data, error } = await supabase
+        .from('hockey_rental_contracts')
+        .upsert(contractPayload, { onConflict: 'rental_id' })
+        .select();
+
+      if (error || !data || data.length === 0) {
+        console.error(`[Contract Save DB Error]: Rental ${rentalId} - ${error?.message || 'Keine Daten von Datenbank zurückgegeben'}`);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Der Vertrag konnte nicht dauerhaft gespeichert werden. Bitte erneut versuchen." 
+        });
+      }
+
+      const savedContract = data[0];
+
+      // Renter-Name im Verleihdatensatz synchronisieren falls sinnvoll
+      const fullName = `${contractPayload.first_name} ${contractPayload.last_name}`;
+      await supabase
+        .from('hockey_rentals')
+        .update({ renter_name: fullName })
+        .eq('id', rentalId);
+
+      // Datenschutz: Niemals IBAN, Anschrift, Telefon, E-Mail oder Signaturdaten loggen!
+      console.log(`[Contract Saved]: Rental ${rentalId}, Status: ${savedContract.status}, Items: ${equipmentSnapshot.length}`);
+
+      res.json({ 
+        success: true, 
+        contract: savedContract
+      });
+    } catch (err: any) {
+      console.error(`[Contract Save Exception]: Rental ${rentalId} - ${err.message}`);
+      res.status(500).json({ 
+        success: false, 
+        message: "Der Vertrag konnte nicht dauerhaft gespeichert werden. Bitte erneut versuchen." 
+      });
     }
   });
 

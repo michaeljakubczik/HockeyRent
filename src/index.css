@@ -59,4 +59,23 @@
 .horizontal-gallery-item {
   scroll-snap-align: start;
   flex: 0 0 auto;
+  width: clamp(130px, calc((100vw - 4.25rem) / 2.5), 180px);
+}
+
+@media (min-width: 640px) {
+  .horizontal-gallery-item {
+    width: 230px;
+  }
+}
+
+@media (min-width: 768px) {
+  .horizontal-gallery-item {
+    width: 245px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .horizontal-gallery-item {
+    width: 255px;
+  }
 }

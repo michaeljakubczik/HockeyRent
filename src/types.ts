@@ -50,6 +50,40 @@ export interface RentalItemRecord {
   hockey_equipment_items?: EquipmentItem;
 }
 
+export interface ContractEquipmentSnapshotItem {
+  id: number;
+  category_label: string;
+  item_code: string;
+  brand: string;
+  size: string;
+}
+
+export interface RentalContract {
+  id?: number;
+  rental_id: number;
+  first_name: string;
+  last_name: string;
+  child_name: string;
+  street: string;
+  house_number: string;
+  postal_code: string;
+  city: string;
+  phone: string;
+  email: string;
+  iban: string;
+  deposit_amount?: number;
+  fee_amount?: number;
+  equipment_snapshot?: ContractEquipmentSnapshotItem[];
+  status?: 'draft' | 'ready' | 'signed';
+  signed_at?: string | null;
+  signer_name?: string | null;
+  signature_data?: string | null;
+  pdf_url?: string | null;
+  email_sent_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Rental {
   id: number;
   renter_name: string;
@@ -65,6 +99,7 @@ export interface Rental {
   active_items?: EquipmentItem[];
   all_items?: EquipmentItem[];
   all_rental_items?: RentalItemRecord[];
+  contract?: RentalContract | null;
 }
 
 export type View = 'available' | 'rented' | 'add' | 'rentals' | 'history' | 'edit' | 'bag';
