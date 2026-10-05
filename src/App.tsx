@@ -564,11 +564,7 @@ export default function App() {
         setCurrentView('rentals');
         setRentalsSubTab('active');
         if (data.rentalId) {
-          setContractModal({
-            isOpen: true,
-            rentalId: data.rentalId,
-            mode: 'form'
-          });
+          setShareSigningRentalId(data.rentalId);
         }
       } else {
         const data: ApiResponse = await res.json();
@@ -2186,9 +2182,13 @@ export default function App() {
             onReturnAll={() => handleReturnRental(editingBundleRental.id)}
             onOpenContract={() => {
               const rId = editingBundleRental.id;
-              const hasContract = Boolean(editingBundleRental.contract);
+              const isSigned = editingBundleRental.contract?.status === 'signed';
               setEditingBundleRental(null);
-              setContractModal({ isOpen: true, rentalId: rId, mode: hasContract ? 'preview' : 'form' });
+              if (isSigned) {
+                setContractModal({ isOpen: true, rentalId: rId, mode: 'preview' });
+              } else {
+                setShareSigningRentalId(rId);
+              }
             }}
           />
         )}
@@ -2756,14 +2756,16 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                     <span>Link teilen</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                  className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>{rental.contract.status === 'signed' ? 'Vertrag ansehen' : 'Entwurf prüfen'}</span>
-                </button>
+                {rental.contract.status === 'signed' && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
+                    className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Vertrag ansehen</span>
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -2873,16 +2875,17 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
           {/* Haupt-Aktionsleiste: Bundle bearbeiten, Alles zurückgeben, Löschen */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={onOpenContract}
-                className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                title="Einverständniserklärung / Ausleihvertrag anzeigen oder ausfüllen"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>{rental.contract ? (rental.contract.status === 'signed' ? 'Vertrag anzeigen' : 'Vertrag unterschreiben') : 'Vertrag anlegen'}</span>
-              </button>
-              {rental.contract?.status !== 'signed' && onOpenSigningLink && (
+              {rental.contract?.status === 'signed' ? (
+                <button
+                  type="button"
+                  onClick={onOpenContract}
+                  className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  title="Unterschriebenen Ausleihvertrag anzeigen"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Vertrag anzeigen</span>
+                </button>
+              ) : onOpenSigningLink ? (
                 <button
                   type="button"
                   onClick={() => onOpenSigningLink(rental.id)}
@@ -2892,7 +2895,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                   <Share2 className="w-3.5 h-3.5" />
                   <span>Link zum Unterschreiben</span>
                 </button>
-              )}
+              ) : null}
               {rental.contract?.status === 'signed' && onDownloadPdf && (
                 <button
                   type="button"
@@ -6009,18 +6012,6 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
             </div>
           </div>
 
-        </div>
-
-        {/* BOTTOM ACTION BUTTON */}
-        <div className="pt-2 flex justify-center pb-8">
-          <button
-            type="button"
-            onClick={handleStartSignFlow}
-            className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl transition-all active:scale-95 cursor-pointer"
-          >
-            <PenTool className="w-5 h-5" />
-            <span>Vertrag jetzt verbindlich unterschreiben</span>
-          </button>
         </div>
 
       </div>
