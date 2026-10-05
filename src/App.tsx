@@ -5251,7 +5251,8 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
     expires_at: string;
   } | null>(null);
 
-  const [isEditingPersonalData, setIsEditingPersonalData] = useState<boolean>(false);
+  // Externer Signierlink startet bewusst mit der Dateneingabe. Erst danach folgt die Vertragsvorschau.
+  const [isEditingPersonalData, setIsEditingPersonalData] = useState<boolean>(true);
   const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
   const [savingPersonalData, setSavingPersonalData] = useState<boolean>(false);
 
@@ -5385,8 +5386,9 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccess('Ihre persönlichen Angaben wurden erfolgreich gespeichert!');
+        setSuccess('Ihre Angaben wurden übernommen. Bitte prüfen Sie jetzt den vollständigen Vertrag.');
         setIsEditingPersonalData(false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         return true;
       } else {
         setError(data.message || 'Fehler beim Speichern Ihrer Angaben.');
@@ -5517,6 +5519,124 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
   const feeAmount = contractData.contract.fee_amount !== undefined ? Number(contractData.contract.fee_amount) : (rental?.fee_total || 60.00);
   const depositAmount = contractData.contract.deposit_amount !== undefined ? Number(contractData.contract.deposit_amount) : 50.00;
   const totalAmount = feeAmount + depositAmount;
+
+  // ERSTER SCHRITT: Persönliche Daten erfassen. Der vollständige Vertrag wird
+  // bewusst erst nach erfolgreichem Speichern angezeigt.
+  if (isEditingPersonalData) {
+    return (
+      <div className="min-h-screen bg-[#141720] text-slate-200 p-3 sm:p-6 flex flex-col items-center">
+        <div className="w-full max-w-xl space-y-4">
+          <div className="bg-[#181B24] border border-slate-800 rounded-3xl p-4 sm:p-5 flex items-center gap-3 shadow-lg">
+            <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex-shrink-0">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-base sm:text-lg font-black text-white">{VEREIN_INFO.name}</h1>
+              <p className="text-xs text-slate-400">Ausleihvertrag · Persönliche Angaben</p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between gap-2">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="bg-[#181B24] border border-slate-700/80 rounded-3xl p-5 sm:p-7 shadow-2xl">
+            <div className="mb-5">
+              <h2 className="text-xl font-black text-white">Persönliche Daten</h2>
+              <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
+                Bitte ergänzen Sie zunächst Ihre Angaben. Anschließend sehen Sie den vollständig ausgefüllten Vertrag und können ihn in Ruhe prüfen und unterschreiben.
+              </p>
+            </div>
+
+            <form onSubmit={handleSavePersonalData} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Name des Kindes (Spieler/in) *</label>
+                <input type="text" required value={formData.child_name} onChange={(e) => setFormData({ ...formData, child_name: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="z. B. Tim Mustermann" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Vorname *</label>
+                  <input type="text" required value={formData.first_name} onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Max" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Nachname *</label>
+                  <input type="text" required value={formData.last_name} onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Mustermann" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_8rem] gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Straße *</label>
+                  <input type="text" required value={formData.street} onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Musterstraße" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Hausnr. *</label>
+                  <input type="text" required value={formData.house_number} onChange={(e) => setFormData({ ...formData, house_number: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="12a" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-[8rem_1fr] gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">PLZ *</label>
+                  <input type="text" required value={formData.postal_code} onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="31275" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Ort *</label>
+                  <input type="text" required value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Lehrte" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Telefonnummer *</label>
+                <input type="tel" required value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="0171 1234567" />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">E-Mail-Adresse *</label>
+                <input type="email" required value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="max@mustermann.de" />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">IBAN (SEPA-Lastschrift) *</label>
+                <input type="text" required value={formData.iban} onChange={handleIbanChange}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="DE89 3705 0198 0000 0123 45" />
+              </div>
+
+              <button type="submit" disabled={savingPersonalData}
+                className="w-full mt-2 px-4 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm cursor-pointer shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+                {savingPersonalData ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Angaben werden gespeichert...</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowRight className="w-4 h-4" />
+                    <span>Weiter zum Vertrag</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#141720] text-slate-200 p-3 sm:p-6 flex flex-col items-center">
