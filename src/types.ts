@@ -82,6 +82,8 @@ export interface RentalContract {
   pdf_path?: string | null;
   contract_snapshot?: any;
   contract_version?: string | null;
+  signing_token_hash?: string | null;
+  signing_token_expires_at?: string | null;
   email_sent_at?: string | null;
   created_at?: string;
   updated_at?: string;

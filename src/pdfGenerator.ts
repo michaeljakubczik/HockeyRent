@@ -40,6 +40,29 @@ function formatDateDe(dateStr?: string | null): string {
   return dateStr;
 }
 
+// Saubere Berechnung: 6 Kalendermonate ab Startdatum
+function calculateDueDate(startDateStr?: string | null): string {
+  if (!startDateStr) return '';
+  const match = startDateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const year = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10); // 1-12
+    const day = parseInt(match[3], 10);
+    let targetMonth = month + 6;
+    let targetYear = year;
+    if (targetMonth > 12) {
+      targetMonth -= 12;
+      targetYear += 1;
+    }
+    const daysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
+    const targetDay = Math.min(day, daysInTargetMonth);
+    const mm = String(targetMonth).padStart(2, '0');
+    const dd = String(targetDay).padStart(2, '0');
+    return `${targetYear}-${mm}-${dd}`;
+  }
+  return startDateStr;
+}
+
 // Formatierung Datum & Uhrzeit für Signatur
 function formatDateTimeDe(isoStr?: string | null): string {
   if (!isoStr) return '—';
@@ -287,6 +310,8 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
 
   y -= boxHeight + 14;
 
+  const effectiveDueDate = rental.due_date || calculateDueDate(rental.rented_at);
+
   // =========================================================================
   // 2. VERLEIHZEITRAUM & KONDITIONEN
   // =========================================================================
@@ -314,8 +339,8 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
   currentPage.drawText('Datum der Übergabe:', { x: MARGIN_LEFT + 8, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
   currentPage.drawText(formatDateDe(rental.rented_at), { x: MARGIN_LEFT + 8, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.1, 0.12, 0.15) });
 
-  currentPage.drawText('Rückgabetermin (6 Mo.):', { x: MARGIN_LEFT + quarter, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
-  currentPage.drawText(formatDateDe(rental.due_date), { x: MARGIN_LEFT + quarter, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.12, 0.35, 0.65) });
+  currentPage.drawText('Vereinbarter Rückgabetermin:', { x: MARGIN_LEFT + quarter, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
+  currentPage.drawText(formatDateDe(effectiveDueDate), { x: MARGIN_LEFT + quarter, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.12, 0.35, 0.65) });
 
   currentPage.drawText('Abnutzungsgebühr:', { x: MARGIN_LEFT + quarter * 2, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
   currentPage.drawText(`${Number(contract.fee_amount || 60).toFixed(2)} €`, { x: MARGIN_LEFT + quarter * 2, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.1, 0.12, 0.15) });
@@ -509,7 +534,7 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
   });
   y -= 13;
 
-  const confBoxHeight = 80;
+  const confBoxHeight = 92;
   currentPage.drawRectangle({
     x: MARGIN_LEFT,
     y: y - confBoxHeight,
@@ -524,15 +549,23 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
   currentPage.drawText(receiptLine, {
     x: MARGIN_LEFT + 8,
     y: y - 13,
-    size: 8,
+    size: 7.8,
     font: boldFont,
     color: rgb(0.1, 0.12, 0.15),
   });
 
+  currentPage.drawText(`Vereinbarter Rückgabetermin: ${formatDateDe(effectiveDueDate)}`, {
+    x: MARGIN_LEFT + 8,
+    y: y - 25,
+    size: 7.8,
+    font: boldFont,
+    color: rgb(0.12, 0.35, 0.65),
+  });
+
   currentPage.drawText('Lastschrifteinzug der Leihgebühr von 60,00 €, sowie der Kaution von 50,00 €:', {
     x: MARGIN_LEFT + 8,
-    y: y - 27,
-    size: 8,
+    y: y - 38,
+    size: 7.5,
     font: regularFont,
     color: rgb(0.2, 0.25, 0.3),
   });
@@ -540,32 +573,32 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
   // IBAN Kasten
   currentPage.drawRectangle({
     x: MARGIN_LEFT + 8,
-    y: y - 56,
+    y: y - 67,
     width: CONTENT_WIDTH - 16,
-    height: 20,
+    height: 19,
     color: rgb(1, 1, 1),
     borderColor: rgb(0.8, 0.83, 0.88),
     borderWidth: 0.8,
   });
   currentPage.drawText('IBAN DES ENTLEIHERS:', {
     x: MARGIN_LEFT + 14,
-    y: y - 51,
+    y: y - 61,
     size: 7,
     font: boldFont,
     color: rgb(0.4, 0.45, 0.5),
   });
   currentPage.drawText(contract.iban || '—', {
     x: MARGIN_LEFT + 130,
-    y: y - 52,
-    size: 9,
+    y: y - 62,
+    size: 8.5,
     font: boldFont,
     color: rgb(0.08, 0.1, 0.15),
   });
 
   currentPage.drawText('Die Bankverbindung wird für die Rückerstattung der Kaution verwendet, sofern keine andere Bankverbindung auf dem Rückgabeprotokoll vermerkt wird.', {
     x: MARGIN_LEFT + 8,
-    y: y - 72,
-    size: 7,
+    y: y - 84,
+    size: 6.8,
     font: italicFont,
     color: rgb(0.4, 0.45, 0.5),
   });

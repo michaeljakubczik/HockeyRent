@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { generateContractPdf } from "../src/pdfGenerator.js";
 import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate.js";
@@ -1049,27 +1050,47 @@ function calculateDueDate(startDateStr: string): string {
     }
   });
 
-  // POST /api/rentals/:id/contract/sign - Vertrag verbindlich abschließen und unterschreiben (Phase 2)
-  app.post("/api/rentals/:id/contract/sign", authHeader, async (req, res) => {
+  // Rate-Limiting für öffentliche Endpunkte (Schutz vor Missbrauch und Brute-Force)
+  const publicRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const checkRateLimit = (ip: string, maxRequests = 30, windowMs = 60000): boolean => {
+    const now = Date.now();
+    const record = publicRateLimitMap.get(ip);
+    if (!record || now > record.resetAt) {
+      publicRateLimitMap.set(ip, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+    if (record.count >= maxRequests) {
+      return false;
+    }
+    record.count++;
+    return true;
+  };
+
+  // Gemeinsame sichere Backend-Finalisierung für Vertragsunterzeichnung (Phase 2 & externer Link)
+  async function finalizeContractSigning(
+    rentalId: number,
+    signature_data: string,
+    signer_name: string
+  ): Promise<{ success: boolean; status?: number; message?: string; contract?: any; pdf_path?: string }> {
     const supabase = getSupabase();
-    const rentalId = Number(req.params.id);
-    const { signature_data, signer_name } = req.body;
 
     // 1. Signaturdaten prüfen (darf nicht leer sein)
     if (!signature_data || typeof signature_data !== 'string' || !signature_data.startsWith('data:image/png;base64,')) {
-      return res.status(400).json({
+      return {
         success: false,
+        status: 400,
         message: "Bitte eine gültige Unterschrift zeichnen."
-      });
+      };
     }
 
     // Leere Leinwand abfangen (Base64-Payload muss substanziell sein)
     const base64Data = signature_data.replace(/^data:image\/png;base64,/, '');
     if (base64Data.length < 200) {
-      return res.status(400).json({
+      return {
         success: false,
+        status: 400,
         message: "Die Unterschrift ist unvollständig oder leer. Bitte erneut unterschreiben."
-      });
+      };
     }
 
     try {
@@ -1087,7 +1108,7 @@ function calculateDueDate(startDateStr: string): string {
         .single();
 
       if (rError || !rental) {
-        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
+        return { success: false, status: 404, message: "Ausleihe nicht gefunden." };
       }
 
       // 3. Vorhandenen Vertrag laden
@@ -1098,18 +1119,20 @@ function calculateDueDate(startDateStr: string): string {
         .maybeSingle();
 
       if (cError || !contract) {
-        return res.status(404).json({
+        return {
           success: false,
+          status: 404,
           message: "Kein Vertragsentwurf vorhanden. Bitte zuerst die Vertragsdaten erfassen und speichern."
-        });
+        };
       }
 
       // Eindeutige Prüfung: Ein bereits unterschriebener Vertrag darf nicht überschrieben werden
       if (contract.status === 'signed') {
-        return res.status(409).json({
+        return {
           success: false,
+          status: 409,
           message: "Dieser Vertrag wurde bereits verbindlich abgeschlossen und unterschrieben."
-        });
+        };
       }
 
       // 4. Frischer Equipment-Snapshot serverseitig direkt aus der DB
@@ -1155,10 +1178,11 @@ function calculateDueDate(startDateStr: string): string {
         });
       } catch (pdfErr: any) {
         console.error(`[PDF Generation Error]: Rental ${rentalId} - ${pdfErr.message}`);
-        return res.status(500).json({
+        return {
           success: false,
+          status: 500,
           message: "Fehler beim Erzeugen des Vertrags-PDFs. Bitte erneut versuchen."
-        });
+        };
       }
 
       // 7. Sichere Speicherung im privaten Supabase-Storage (hockey-contracts)
@@ -1166,12 +1190,9 @@ function calculateDueDate(startDateStr: string): string {
       const storagePath = `contracts/${rentalId}/contract_${rentalId}_${timestamp}.pdf`;
       const pdfBuffer = Buffer.from(pdfBytes);
 
-      // Bucket sicherstellen
       try {
         await supabase.storage.createBucket('hockey-contracts', { public: false });
-      } catch {
-        // Ignorieren falls bereits existent
-      }
+      } catch {}
 
       const { error: uploadError } = await supabase
         .storage
@@ -1183,13 +1204,15 @@ function calculateDueDate(startDateStr: string): string {
 
       if (uploadError) {
         console.error(`[Storage Upload Error]: Rental ${rentalId} - ${uploadError.message}`);
-        return res.status(500).json({
+        return {
           success: false,
+          status: 500,
           message: "Das Vertrags-PDF konnte nicht im sicheren Speicher abgelegt werden. Der Vertrag wurde nicht abgeschlossen."
-        });
+        };
       }
 
       // 8. Vertragsdaten in der Datenbank ATOMAR von 'draft' auf 'signed' setzen
+      // Gleichzeitig wird der signing_token_hash gelöscht, sodass der Link sofort ungültig wird!
       const updatePayload: any = {
         status: 'signed',
         signed_at: signedAt,
@@ -1200,6 +1223,8 @@ function calculateDueDate(startDateStr: string): string {
         equipment_snapshot: equipmentSnapshot,
         contract_snapshot: contractSnapshot,
         contract_version: CURRENT_CONTRACT_VERSION,
+        signing_token_hash: null,
+        signing_token_expires_at: null,
         updated_at: signedAt
       };
 
@@ -1213,22 +1238,20 @@ function calculateDueDate(startDateStr: string): string {
       // Fall A: Technischer Datenbankfehler
       if (updateError) {
         console.error(`[Contract Sign DB Error]: Rental ${rentalId} - ${updateError.message}`);
-        // Rollback: hochgeladene Datei dieses Fehlversuchs wieder entfernen
         try {
           await supabase.storage.from('hockey-contracts').remove([storagePath]);
         } catch {}
-        return res.status(500).json({
+        return {
           success: false,
+          status: 500,
           message: "Der Status des Vertrags konnte in der Datenbank nicht aktualisiert werden."
-        });
+        };
       }
 
-      // Fall B: Race Condition / Vertrag nicht mehr im Status 'draft' (z. B. durch parallelen Request)
+      // Fall B: Race Condition / Vertrag nicht mehr im Status 'draft'
       if (!updatedData || updatedData.length === 0) {
         console.warn(`[Contract Sign Conflict]: Rental ${rentalId} - Vertrag wurde bereits durch einen parallelen Vorgang abgeschlossen.`);
-        // Rollback: Die von DIESEM unterlegenen Request hochgeladene PDF-Datei löschen
         try {
-          // Sicherstellen, dass nicht versehentlich die Datei des bereits gewonnenen Vertrags gelöscht wird
           const { data: existingContract } = await supabase
             .from('hockey_rental_contracts')
             .select('pdf_path')
@@ -1240,26 +1263,386 @@ function calculateDueDate(startDateStr: string): string {
           }
         } catch {}
 
-        return res.status(409).json({
+        return {
           success: false,
+          status: 409,
           message: "Dieser Vertrag wurde bereits durch einen parallelen Vorgang verbindlich abgeschlossen."
-        });
+        };
       }
 
       const finalizedContract = updatedData[0];
-      console.log(`[Contract Finalized]: Rental ${rentalId}, Signer: ${effectiveSignerName}, Version: ${CURRENT_CONTRACT_VERSION}`);
+      console.log(`[Contract Finalized]: Rental ${rentalId}, Version: ${CURRENT_CONTRACT_VERSION}`);
 
-      res.json({
+      return {
         success: true,
         contract: finalizedContract,
         pdf_path: storagePath
-      });
+      };
     } catch (err: any) {
       console.error(`[Contract Sign Exception]: Rental ${rentalId} - ${err.message}`);
-      res.status(500).json({
+      return {
         success: false,
+        status: 500,
         message: "Unerwarteter Fehler beim Abschließen des Vertrags."
+      };
+    }
+  }
+
+  // POST /api/rentals/:id/contract/sign - Vertrag im Adminbereich verbindlich abschließen (Phase 2)
+  app.post("/api/rentals/:id/contract/sign", authHeader, async (req, res) => {
+    const rentalId = Number(req.params.id);
+    const { signature_data, signer_name } = req.body;
+    const result = await finalizeContractSigning(rentalId, signature_data, signer_name);
+    if (!result.success) {
+      return res.status(result.status || 500).json({ success: false, message: result.message });
+    }
+    res.json({
+      success: true,
+      contract: result.contract,
+      pdf_path: result.pdf_path
+    });
+  });
+
+  // POST /api/rentals/:id/contract/signing-link - Sicheren individuellen Signing-Token erzeugen
+  app.post("/api/rentals/:id/contract/signing-link", authHeader, async (req, res) => {
+    try {
+      const supabase = getSupabase();
+      const rentalId = Number(req.params.id);
+
+      // 1. Ausleihe prüfen
+      const { data: rental, error: rErr } = await supabase
+        .from('hockey_rentals')
+        .select('id, renter_name, fee_total')
+        .eq('id', rentalId)
+        .single();
+
+      if (rErr || !rental) {
+        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
+      }
+
+      // 2. Bestehenden Vertrag prüfen
+      const { data: contract } = await supabase
+        .from('hockey_rental_contracts')
+        .select('id, rental_id, status')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (contract && contract.status === 'signed') {
+        return res.status(400).json({
+          success: false,
+          message: "Dieser Vertrag ist bereits verbindlich unterschrieben. Es kann kein neuer Link erzeugt werden."
+        });
+      }
+
+      // 3. Kryptografisch sicheren 32-Byte Zufallstoken erzeugen (64 Hex-Zeichen)
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      // Standardmäßig 7 Tage gültig
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      if (!contract) {
+        // Neuen Entwurf anlegen, falls noch keiner existiert
+        const nameParts = (rental.renter_name || '').trim().split(' ');
+        const fName = nameParts[0] || '';
+        const lName = nameParts.slice(1).join(' ') || '';
+        const initialPayload = {
+          rental_id: rentalId,
+          first_name: fName,
+          last_name: lName,
+          child_name: '',
+          street: '',
+          house_number: '',
+          postal_code: '',
+          city: '',
+          phone: '',
+          email: '',
+          iban: '',
+          deposit_amount: 50.00,
+          fee_amount: rental.fee_total !== undefined ? Number(rental.fee_total) : 60.00,
+          status: 'draft',
+          signing_token_hash: tokenHash,
+          signing_token_expires_at: expiresAt,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const { error: insErr } = await supabase
+          .from('hockey_rental_contracts')
+          .insert(initialPayload);
+
+        if (insErr) {
+          return res.status(500).json({ success: false, message: "Fehler beim Anlegen des Vertragsentwurfs." });
+        }
+      } else {
+        // Bestehenden Entwurf mit neuem Token-Hash & Ablaufdatum aktualisieren (überschreibt vorherigen Link)
+        const { error: updErr } = await supabase
+          .from('hockey_rental_contracts')
+          .update({
+            signing_token_hash: tokenHash,
+            signing_token_expires_at: expiresAt,
+            updated_at: new Date().toISOString()
+          })
+          .eq('rental_id', rentalId);
+
+        if (updErr) {
+          return res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Signier-Links." });
+        }
+      }
+
+      console.log(`[Signing Link Created]: Rental ${rentalId}`);
+      res.json({
+        success: true,
+        token: rawToken,
+        expires_at: expiresAt
       });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // GET /api/public/contract - Öffentliche Vertragsdaten für Entleiher via sicherem Token laden
+  app.get("/api/public/contract", async (req, res) => {
+    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    if (!checkRateLimit(ip)) {
+      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
+    }
+
+    const rawToken = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+    if (!rawToken || rawToken.length < 16) {
+      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+    }
+
+    try {
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const supabase = getSupabase();
+
+      const { data: contract, error: cErr } = await supabase
+        .from('hockey_rental_contracts')
+        .select('*')
+        .eq('signing_token_hash', tokenHash)
+        .maybeSingle();
+
+      if (cErr || !contract) {
+        return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      if (contract.status === 'signed') {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      // Rental und zugehörige aktive Items laden
+      const { data: rental, error: rErr } = await supabase
+        .from('hockey_rentals')
+        .select(`
+          id, renter_name, rented_at, due_date, fee_total,
+          hockey_rental_items(
+            item_id, returned_at,
+            hockey_equipment_items(id, item_code, brand, size, category, category_label)
+          )
+        `)
+        .eq('id', contract.rental_id)
+        .single();
+
+      if (rErr || !rental) {
+        return res.status(404).json({ success: false, message: "Ausleihe zu diesem Vertrag wurde nicht gefunden." });
+      }
+
+      const rItems = (rental.hockey_rental_items || [])
+        .filter((ri: any) => !ri.returned_at)
+        .map((ri: any) => ri.hockey_equipment_items)
+        .filter(Boolean);
+
+      const equipment = rItems.map((eq: any) => ({
+        id: eq.id,
+        item_code: eq.item_code,
+        category: eq.category,
+        category_label: eq.category_label || eq.category,
+        brand: eq.brand,
+        size: eq.size
+      }));
+
+      // Rückgabe NUR der für den Vertrag notwendigen Daten (kein Zugriff auf andere Daten, keine Tokens)
+      res.json({
+        success: true,
+        contract: {
+          first_name: contract.first_name || '',
+          last_name: contract.last_name || '',
+          child_name: contract.child_name || '',
+          street: contract.street || '',
+          house_number: contract.house_number || '',
+          postal_code: contract.postal_code || '',
+          city: contract.city || '',
+          phone: contract.phone || '',
+          email: contract.email || '',
+          iban: contract.iban || '',
+          fee_amount: contract.fee_amount !== undefined ? Number(contract.fee_amount) : (rental.fee_total || 60.00),
+          deposit_amount: contract.deposit_amount !== undefined ? Number(contract.deposit_amount) : 50.00,
+          status: contract.status
+        },
+        rental: {
+          id: rental.id,
+          rented_at: rental.rented_at,
+          due_date: rental.due_date,
+          fee_total: rental.fee_total
+        },
+        equipment,
+        expires_at: contract.signing_token_expires_at
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: "Fehler beim Laden des Vertrags." });
+    }
+  });
+
+  // POST /api/public/contract/update - Entleiher darf persönliche Daten vor Unterschrift ergänzen/korrigieren
+  app.post("/api/public/contract/update", async (req, res) => {
+    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    if (!checkRateLimit(ip)) {
+      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
+    }
+
+    const {
+      token: rawToken,
+      first_name,
+      last_name,
+      child_name,
+      street,
+      house_number,
+      postal_code,
+      city,
+      phone,
+      email,
+      iban
+    } = req.body;
+
+    if (!rawToken || typeof rawToken !== 'string') {
+      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+    }
+
+    try {
+      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+      const supabase = getSupabase();
+
+      const { data: contract, error: cErr } = await supabase
+        .from('hockey_rental_contracts')
+        .select('id, rental_id, status, signing_token_expires_at')
+        .eq('signing_token_hash', tokenHash)
+        .maybeSingle();
+
+      if (cErr || !contract || contract.status !== 'draft') {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      // Validierung der Pflichtfelder
+      if (!first_name?.trim() || !last_name?.trim() || !child_name?.trim()) {
+        return res.status(400).json({ success: false, message: "Bitte Vorname, Nachname und Name des Kindes angeben." });
+      }
+      if (!street?.trim() || !house_number?.trim() || !postal_code?.trim() || !city?.trim()) {
+        return res.status(400).json({ success: false, message: "Bitte die Anschrift vollständig angeben (Straße, Hausnr., PLZ, Ort)." });
+      }
+      if (!phone?.trim()) {
+        return res.status(400).json({ success: false, message: "Bitte eine Telefonnummer angeben." });
+      }
+      const cleanEmail = (email || '').trim();
+      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return res.status(400).json({ success: false, message: "Bitte eine gültige E-Mail-Adresse angeben." });
+      }
+      const cleanIban = (iban || '').replace(/\s+/g, '').toUpperCase();
+      if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
+        return res.status(400).json({ success: false, message: "Bitte eine gültige IBAN angeben (mind. 15 Stellen, z. B. DE...)." });
+      }
+
+      // Ausschließlich persönliche Daten dürfen aktualisiert werden (Equipment, Gebühr, Kaution etc. bleiben geschützt)
+      const updateFields = {
+        first_name: first_name.trim(),
+        last_name: last_name.trim(),
+        child_name: child_name.trim(),
+        street: street.trim(),
+        house_number: house_number.trim(),
+        postal_code: postal_code.trim(),
+        city: city.trim(),
+        phone: phone.trim(),
+        email: cleanEmail,
+        iban: cleanIban,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: uErr } = await supabase
+        .from('hockey_rental_contracts')
+        .update(updateFields)
+        .eq('id', contract.id)
+        .eq('status', 'draft');
+
+      if (uErr) {
+        return res.status(500).json({ success: false, message: "Fehler beim Speichern der Vertragsdaten." });
+      }
+
+      // Name des Entleihers auch in hockey_rentals synchronisieren
+      try {
+        const fullName = `${updateFields.first_name} ${updateFields.last_name}`;
+        await supabase.from('hockey_rentals').update({ renter_name: fullName }).eq('id', contract.rental_id);
+      } catch {}
+
+      res.json({
+        success: true,
+        contract: updateFields
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: "Fehler beim Speichern der Vertragsdaten." });
+    }
+  });
+
+  // POST /api/public/contract/sign - Entleiher signiert Vertrag verbindlich über den Sicherheits-Link
+  app.post("/api/public/contract/sign", async (req, res) => {
+    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    if (!checkRateLimit(ip)) {
+      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
+    }
+
+    const { token: rawToken, signature_data, signer_name } = req.body;
+
+    if (!rawToken || typeof rawToken !== 'string') {
+      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+    }
+
+    try {
+      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+      const supabase = getSupabase();
+
+      const { data: contract, error: cErr } = await supabase
+        .from('hockey_rental_contracts')
+        .select('id, rental_id, status, signing_token_expires_at')
+        .eq('signing_token_hash', tokenHash)
+        .maybeSingle();
+
+      if (cErr || !contract || contract.status !== 'draft') {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
+        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
+      }
+
+      // Wiederverwendung der sicheren bestehenden Signierlogik!
+      const result = await finalizeContractSigning(contract.rental_id, signature_data, signer_name);
+      if (!result.success) {
+        return res.status(result.status || 500).json({ success: false, message: result.message });
+      }
+
+      // Nach Abschluss: einfache Bestätigung, keine sensiblen Daten zurücksenden
+      res.json({
+        success: true,
+        message: "Vielen Dank. Der Vertrag wurde erfolgreich unterschrieben."
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: "Fehler beim Abschließen des Vertrags." });
     }
   });
 

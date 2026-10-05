@@ -30,7 +30,13 @@ import {
   ShieldCheck,
   Lock,
   Download,
-  PenTool
+  PenTool,
+  Share2,
+  Copy,
+  Clock,
+  ShieldAlert,
+  ExternalLink,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
@@ -135,6 +141,45 @@ interface ApiResponse<T = any> {
 }
 
 export default function App() {
+  const [publicSignToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      // 1. Primär aus URL-Hash auslesen (#sign=TOKEN oder #token=TOKEN)
+      const rawHash = window.location.hash.startsWith('#')
+        ? window.location.hash.slice(1)
+        : window.location.hash;
+      if (rawHash) {
+        const hashParams = new URLSearchParams(rawHash);
+        const hashToken = hashParams.get('sign') || hashParams.get('token');
+        if (hashToken) return hashToken;
+
+        // Fallback falls der Hash direkt ohne Params-Syntax wie '#sign=...' formatiert ist
+        const match = rawHash.match(/^(?:sign|token)=([a-fA-F0-9]+)$/);
+        if (match) return match[1];
+      }
+
+      // 2. Abwärtskompatibler Fallback aus Query-String
+      const params = new URLSearchParams(window.location.search);
+      return params.get('token') || params.get('sign') || null;
+    }
+    return null;
+  });
+
+  // Sobald der Token sicher im React-State gespeichert ist, aus der Adresszeile entfernen
+  useEffect(() => {
+    if (publicSignToken && typeof window !== 'undefined') {
+      const cleanUrl = window.location.pathname;
+      try {
+        window.history.replaceState(null, '', cleanUrl);
+      } catch {
+        // Ignorieren, falls Browser history.replaceState blockiert
+      }
+    }
+  }, [publicSignToken]);
+
+  if (publicSignToken) {
+    return <PublicContractView token={publicSignToken} />;
+  }
+
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [password, setPassword] = useState('');
   const [items, setItems] = useState<EquipmentItem[]>([]);
@@ -164,6 +209,9 @@ export default function App() {
     rentalId: number;
     mode: 'form' | 'preview';
   } | null>(null);
+
+  // Share Signing Link Modal
+  const [shareSigningRentalId, setShareSigningRentalId] = useState<number | null>(null);
 
   // Spezialmodi für Bundle-Bearbeitung über den normalen zentralen Bestand
   const [bundleExchange, setBundleExchange] = useState<{
@@ -1525,13 +1573,6 @@ export default function App() {
                             aria-expanded={!isCollapsed}
                           >
                             <div className="flex items-center gap-3 min-w-0 pr-2">
-                              <div className="p-1 rounded-lg bg-[#181B24] text-slate-400 group-hover:text-white transition-colors">
-                                {isCollapsed ? (
-                                  <ChevronDown className="w-4 h-4" />
-                                ) : (
-                                  <ChevronUp className="w-4 h-4" />
-                                )}
-                              </div>
                               <h3 className="text-base sm:text-lg font-bold text-white tracking-tight truncate">
                                 {category}
                               </h3>
@@ -1540,19 +1581,28 @@ export default function App() {
                               </span>
                             </div>
 
-                            {hasSelectedInBag && (
-                              <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg flex-shrink-0">
-                                <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                                <span className="hidden sm:inline">
-                                  {selectedInBag.length === 1 
-                                    ? `In Tasche: ${selectedInBag[0].brand} · ${selectedInBag[0].size} · ${selectedInBag[0].item_code}` 
-                                    : `${selectedInBag.length} in Tasche`}
-                                </span>
-                                <span className="sm:hidden">
-                                  {selectedInBag.length} in Tasche
-                                </span>
+                            <div className="flex items-center gap-2.5 flex-shrink-0">
+                              {hasSelectedInBag && (
+                                <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg flex-shrink-0">
+                                  <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                                  <span className="hidden sm:inline">
+                                    {selectedInBag.length === 1 
+                                      ? `In Tasche: ${selectedInBag[0].brand} · ${selectedInBag[0].size} · ${selectedInBag[0].item_code}` 
+                                      : `${selectedInBag.length} in Tasche`}
+                                  </span>
+                                  <span className="sm:hidden">
+                                    {selectedInBag.length} in Tasche
+                                  </span>
+                                </div>
+                              )}
+                              <div className="p-1 rounded-lg bg-[#181B24] text-slate-400 group-hover:text-white transition-colors">
+                                {isCollapsed ? (
+                                  <ChevronDown className="w-4 h-4" />
+                                ) : (
+                                  <ChevronUp className="w-4 h-4" />
+                                )}
                               </div>
-                            )}
+                            </div>
                           </button>
 
                           {!isCollapsed && (
@@ -1827,6 +1877,7 @@ export default function App() {
                         onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract ? 'preview' : 'form' })}
+                        onOpenSigningLink={(rId) => setShareSigningRentalId(rId)}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
                     ))
@@ -2541,6 +2592,7 @@ interface ActiveRentalCardProps {
   onEditBundle: () => void;
   onDelete: () => void;
   onOpenContract: () => void;
+  onOpenSigningLink?: (rentalId: number) => void;
   onDownloadPdf?: () => void;
 }
 
@@ -2556,6 +2608,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   onEditBundle,
   onDelete,
   onOpenContract,
+  onOpenSigningLink,
   onDownloadPdf
 }) => {
   const activeItems = rental.items || [];
@@ -2692,6 +2745,17 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                     <span>PDF laden</span>
                   </button>
                 )}
+                {rental.contract.status !== 'signed' && onOpenSigningLink && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onOpenSigningLink(rental.id); }}
+                    className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="Link zum Unterschreiben für Entleiher erzeugen und teilen"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Link teilen</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
@@ -2818,6 +2882,17 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 <FileText className="w-3.5 h-3.5" />
                 <span>{rental.contract ? (rental.contract.status === 'signed' ? 'Vertrag anzeigen' : 'Vertrag unterschreiben') : 'Vertrag anlegen'}</span>
               </button>
+              {rental.contract?.status !== 'signed' && onOpenSigningLink && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSigningLink(rental.id)}
+                  className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Link zum Unterschreiben</span>
+                </button>
+              )}
               {rental.contract?.status === 'signed' && onDownloadPdf && (
                 <button
                   type="button"
@@ -3485,7 +3560,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 // ==============================================================================
 interface SignatureModalProps {
   show: boolean;
-  rentalId: number;
+  rentalId?: number;
   initialSignerName: string;
   onCancel: () => void;
   onConfirm: (signatureData: string, signerName: string) => Promise<void>;
@@ -3631,7 +3706,7 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold text-white">Vertrag verbindlich unterzeichnen</h3>
-              <p className="text-xs text-slate-400">Ausleihe #{rentalId} · Förderverein der Wiesel Arpke e.V.</p>
+              <p className="text-xs text-slate-400">{rentalId ? `Ausleihe #${rentalId} · ` : ''}Förderverein der Wiesel Arpke e.V.</p>
             </div>
           </div>
           <button
@@ -3731,6 +3806,272 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
 };
 
 // ==============================================================================
+// 4b. SHARE SIGNING LINK MODAL (SICHERER INDIVIDUELLER VERTRAGSLINK)
+// ==============================================================================
+interface ShareSigningLinkModalProps {
+  rentalId: number;
+  password: string;
+  onClose: () => void;
+}
+
+const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
+  rentalId,
+  password,
+  onClose
+}) => {
+  const [token, setToken] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<boolean>(false);
+  const [showConfirmNew, setShowConfirmNew] = useState<boolean>(false);
+  const [generatingNew, setGeneratingNew] = useState<boolean>(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const fetchOrCreateLink = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract/signing-link`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setToken(data.token);
+        setExpiresAt(data.expires_at);
+      } else {
+        setError(data.message || 'Fehler beim Erzeugen des Signier-Links.');
+      }
+    } catch {
+      setError('Verbindungsfehler beim Erzeugen des Links.');
+    } finally {
+      setLoading(false);
+    }
+  }, [rentalId, password]);
+
+  useEffect(() => {
+    fetchOrCreateLink();
+  }, [fetchOrCreateLink]);
+
+  const shareUrl = token ? `${window.location.origin}/#sign=${token}` : '';
+
+  const handleCopy = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setNotice('Link erfolgreich in die Zwischenablage kopiert!');
+      setTimeout(() => {
+        setCopied(false);
+        setNotice(null);
+      }, 3000);
+    } catch {
+      setError('Kopieren in die Zwischenablage fehlgeschlagen. Bitte den Link manuell markieren und kopieren.');
+    }
+  };
+
+  const handleShare = async () => {
+    if (!shareUrl) return;
+    if (typeof navigator !== 'undefined' && 'share' in navigator) {
+      try {
+        await navigator.share({
+          title: 'Ausleihvertrag Wiesel Arpke e.V.',
+          text: 'Hier ist Ihr persönlicher Link zur Einverständniserklärung Hockey-Ausrüstung zum Prüfen und Unterschreiben:',
+          url: shareUrl
+        });
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          handleCopy();
+        }
+      }
+    } else {
+      handleCopy();
+    }
+  };
+
+  const handleGenerateNew = async () => {
+    setShowConfirmNew(false);
+    setGeneratingNew(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract/signing-link`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setToken(data.token);
+        setExpiresAt(data.expires_at);
+        setNotice('Neuer Link erzeugt! Der vorherige Link ist nun ungültig.');
+        setTimeout(() => setNotice(null), 4000);
+      } else {
+        setError(data.message || 'Fehler beim Erzeugen eines neuen Links.');
+      }
+    } catch {
+      setError('Verbindungsfehler beim Erzeugen des Links.');
+    } finally {
+      setGeneratingNew(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-[#1F2330] border border-slate-700 rounded-3xl p-5 sm:p-6 max-w-lg w-full shadow-2xl text-left space-y-4"
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-300">
+              <Share2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base sm:text-lg font-bold text-white">Link zum Unterschreiben</h3>
+              <p className="text-xs text-slate-400">Ausleihe #{rentalId} · Förderverein der Wiesel Arpke e.V.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {error && (
+          <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs">
+            {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+            <span>{notice}</span>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="py-8 text-center text-slate-400 text-xs animate-pulse">
+            Erzeuge sicheren individuellen Signier-Link...
+          </div>
+        ) : (
+          <div className="space-y-4 text-xs">
+            <p className="text-slate-300 leading-relaxed">
+              Über diesen individuellen Link kann der Entleiher den Vertrag auf seinem eigenen Smartphone oder Tablet prüfen, persönliche Daten vervollständigen und mit dem Finger verbindlich digital unterschreiben.
+            </p>
+
+            <div className="p-3 rounded-xl bg-[#181B24] border border-slate-700/80 space-y-2">
+              <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Persönlicher Vertragslink
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={shareUrl}
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                  className="flex-1 px-3 py-2.5 rounded-lg bg-[#252936] border border-slate-700 text-xs font-mono text-white select-all outline-none truncate"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className={`px-3.5 py-2.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer flex-shrink-0 ${
+                    copied
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                  }`}
+                  title="In die Zwischenablage kopieren"
+                >
+                  {copied ? <CheckCircle className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? 'Kopiert!' : 'Kopieren'}</span>
+                </button>
+              </div>
+
+              {expiresAt && (
+                <p className="text-[11px] text-slate-400 flex items-center gap-1.5 pt-1">
+                  <Clock className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
+                  <span>Standardmäßig 7 Tage gültig (bis {formatDateTimeDe(expiresAt)})</span>
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-2">
+                {typeof navigator !== 'undefined' && 'share' in navigator && (
+                  <button
+                    type="button"
+                    onClick={handleShare}
+                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>Per Smartphone teilen</span>
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowConfirmNew(true)}
+                disabled={generatingNew}
+                className="text-[11px] text-slate-400 hover:text-amber-300 underline transition-colors cursor-pointer"
+              >
+                Neuen Link erzeugen (alten ungültig machen)
+              </button>
+            </div>
+
+            {showConfirmNew && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-2 mt-2">
+                <p className="font-bold">Vorherigen Link ungültig machen?</p>
+                <p className="text-[11px] text-slate-300">
+                  Wenn Sie einen neuen Link erzeugen, kann der bisherige Link vom Entleiher nicht mehr geöffnet oder signiert werden.
+                </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleGenerateNew}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs cursor-pointer"
+                  >
+                    Ja, neuen Link erzeugen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmNew(false)}
+                    className="px-3 py-1.5 rounded-lg bg-[#181B24] hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs cursor-pointer"
+                  >
+                    Abbrechen
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="pt-2 border-t border-slate-800 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-5 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+          >
+            Schließen
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+// ==============================================================================
 // 5. CONTRACT MODAL (PHASE 1 & 2: EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG)
 // Förderverein der Wiesel Arpke e.V., Am Hainhop 12, 31275 Lehrte
 // ==============================================================================
@@ -3766,11 +4107,22 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
   const [existingContract, setExistingContract] = useState<RentalContract | null>(null);
   const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
+  const [showShareModal, setShowShareModal] = useState<boolean>(false);
 
   // Signatur-Status (Phase 2)
   const [showSignConfirm, setShowSignConfirm] = useState<boolean>(false);
   const [showSignatureModal, setShowSignatureModal] = useState<boolean>(false);
   const [isSigningSubmitting, setIsSigningSubmitting] = useState<boolean>(false);
+
+  // Positive Statusmeldungen nach ca. 3 Sekunden automatisch ausblenden (Fehler bleiben bewusst sichtbar)
+  useEffect(() => {
+    if (success) {
+      const timer = setTimeout(() => {
+        setSuccess(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [success]);
 
   const isSigned = existingContract?.status === 'signed';
 
@@ -4338,8 +4690,8 @@ const ContractModal: React.FC<ContractModalProps> = ({
                     <strong className="text-white">{formatDateDe(rentedAtDate)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
-                    <span className="text-slate-400">Rückgabe bis:</span>
-                    <strong className="text-blue-300">{formatDateDe(dueDate)} (6 Mon.)</strong>
+                    <span className="text-slate-400">Vereinbarter Rückgabetermin:</span>
+                    <strong className="text-blue-300">{formatDateDe(dueDate)}</strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-[#252936] border border-slate-700 flex justify-between">
                     <span className="text-slate-400">Abnutzungsgebühr:</span>
@@ -4377,7 +4729,20 @@ const ContractModal: React.FC<ContractModalProps> = ({
                   Schließen
                 </button>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const saved = await handleSaveContract(undefined, 'stay');
+                      if (saved) setShowShareModal(true);
+                    }}
+                    className="px-4 py-3 rounded-xl bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+                    title="Vertrag speichern und Link zum Unterschreiben für Entleiher teilen"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>Link zum Unterschreiben</span>
+                  </button>
+
                   <button
                     type="button"
                     disabled={saving}
@@ -4505,7 +4870,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
                       <strong className="text-white text-sm">{formatDateDe(rentedAtDate)}</strong>
                     </div>
                     <div>
-                      <span className="text-slate-400 block text-[11px]">Geplantes Rückgabedatum (6 Monate):</span>
+                      <span className="text-slate-400 block text-[11px]">Vereinbarter Rückgabetermin:</span>
                       <strong className="text-blue-300 text-sm">{formatDateDe(dueDate)}</strong>
                     </div>
                   </div>
@@ -4617,6 +4982,10 @@ const ContractModal: React.FC<ContractModalProps> = ({
                         </strong>{' '}
                         {CONTRACT_CONFIRMATION.receiptSuffix}
                       </p>
+                      <div className="p-2.5 rounded-lg bg-[#181B24] border border-slate-700/60 flex items-center justify-between text-xs">
+                        <span className="text-slate-300 font-medium">Vereinbarter Rückgabetermin:</span>
+                        <strong className="text-blue-300 font-bold">{formatDateDe(dueDate)}</strong>
+                      </div>
                       <p className="font-semibold text-slate-200">
                         {CONTRACT_CONFIRMATION.directDebitNotice}
                       </p>
@@ -4665,21 +5034,29 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
                     <div className="p-4 rounded-xl border border-slate-700 bg-[#1F2330] text-center space-y-2">
                       {isSigned && existingContract?.signature_data ? (
-                        <div className="h-16 flex items-center justify-center bg-white rounded-lg p-1.5 shadow-inner">
+                        <div className="min-h-[5.5rem] flex items-center justify-center bg-white rounded-xl p-2 shadow-inner">
                           <img
                             src={existingContract.signature_data}
                             alt="Digitale Unterschrift"
-                            className="max-h-13 max-w-full object-contain"
+                            className="max-h-16 max-w-full object-contain"
                           />
                         </div>
                       ) : (
-                        <div className="h-16 flex flex-col items-center justify-center text-slate-400 bg-[#181B24] rounded-lg border border-dashed border-indigo-500/30">
-                          <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
-                            <PenTool className="w-3.5 h-3.5" />
+                        <button
+                          type="button"
+                          onClick={handleStartSignFlow}
+                          className="w-full min-h-[5.5rem] py-3.5 px-4 flex flex-col items-center justify-center text-slate-300 bg-[#181B24] hover:bg-[#1E2330] active:scale-[0.98] rounded-xl border-2 border-dashed border-indigo-500/50 hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all cursor-pointer group shadow-sm"
+                          title="Hier tippen, um den Vertrag digital zu unterschreiben"
+                        >
+                          <span className="text-xs sm:text-sm font-bold text-indigo-300 group-hover:text-indigo-200 flex items-center gap-1.5">
+                            <PenTool className="w-4 h-4 text-indigo-400 group-hover:text-indigo-300" />
                             <span>Digitale Unterschrift</span>
                           </span>
-                          <span className="text-[10px] text-slate-500 mt-0.5">Bereit zur Unterzeichnung</span>
-                        </div>
+                          <span className="text-[11px] sm:text-xs font-medium text-slate-400 group-hover:text-slate-200 mt-1.5 flex items-center gap-1">
+                            <span>Noch nicht unterschrieben – hier tippen zum Unterschreiben</span>
+                            <ArrowRight className="w-3.5 h-3.5 text-indigo-400 group-hover:translate-x-0.5 transition-transform" />
+                          </span>
+                        </button>
                       )}
                       <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-300">
                         {isSigned ? (
@@ -4725,35 +5102,34 @@ const ContractModal: React.FC<ContractModalProps> = ({
                     </button>
                   </>
                 ) : (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setMode('form')}
-                        className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
-                      >
-                        <Edit className="w-4 h-4" />
-                        <span>Daten bearbeiten</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={onClose}
-                        className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 text-xs font-bold transition-all cursor-pointer"
-                      >
-                        Schließen
-                      </button>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowShareModal(true)}
+                      className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-md cursor-pointer"
+                      title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
+                    >
+                      <Share2 className="w-4 h-4" />
+                      <span>Link zum Unterschreiben</span>
+                    </button>
 
                     <button
                       type="button"
-                      onClick={handleStartSignFlow}
-                      className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/40"
+                      onClick={() => setMode('form')}
+                      className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
                     >
-                      <PenTool className="w-4 h-4" />
-                      <span>Vertrag unterschreiben</span>
+                      <Edit className="w-4 h-4" />
+                      <span>Daten bearbeiten</span>
                     </button>
-                  </>
+
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 text-xs font-bold transition-all cursor-pointer"
+                    >
+                      Schließen
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -4784,6 +5160,15 @@ const ContractModal: React.FC<ContractModalProps> = ({
           onConfirm={handleSignComplete}
           isSubmitting={isSigningSubmitting}
         />
+
+        {/* SHARE SIGNING LINK MODAL */}
+        {showShareModal && (
+          <ShareSigningLinkModal
+            rentalId={rentalId}
+            password={password}
+            onClose={() => setShowShareModal(false)}
+          />
+        )}
       </motion.div>
     </div>
   );
@@ -4841,6 +5226,832 @@ function ConfirmModal({
     </div>
   );
 }
+
+// ==============================================================================
+// 6. ÖFFENTLICHE VERTRAGSSEITE FÜR ENTLEIHER (SICHERER INDIVIDUELLER LINK)
+// Förderverein der Wiesel Arpke e.V., Am Hainhop 12, 31275 Lehrte
+// ==============================================================================
+interface PublicContractViewProps {
+  token: string;
+}
+
+const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
+  const [loading, setLoading] = useState<boolean>(true);
+  const [invalid, setInvalid] = useState<boolean>(false);
+  const [invalidMessage, setInvalidMessage] = useState<string>('Dieser Vertragslink ist nicht mehr gültig.');
+  const [isCompleted, setIsCompleted] = useState<boolean>(false);
+
+  const [contractData, setContractData] = useState<{
+    contract: any;
+    rental: any;
+    equipment: any[];
+    expires_at: string;
+  } | null>(null);
+
+  const [isEditingPersonalData, setIsEditingPersonalData] = useState<boolean>(false);
+  const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
+  const [savingPersonalData, setSavingPersonalData] = useState<boolean>(false);
+
+  const [formData, setFormData] = useState({
+    first_name: '',
+    last_name: '',
+    child_name: '',
+    street: '',
+    house_number: '',
+    postal_code: '',
+    city: '',
+    phone: '',
+    email: '',
+    iban: ''
+  });
+
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  // Signatur-Status
+  const [showSignConfirm, setShowSignConfirm] = useState<boolean>(false);
+  const [showSignatureModal, setShowSignatureModal] = useState<boolean>(false);
+  const [isSigningSubmitting, setIsSigningSubmitting] = useState<boolean>(false);
+
+  // Positive Statusmeldungen nach ca. 3 Sekunden automatisch ausblenden (Fehler bleiben bewusst sichtbar)
+  useEffect(() => {
+    if (success) {
+      const timer = setTimeout(() => {
+        setSuccess(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [success]);
+
+  // Daten vom öffentlichen Endpoint laden
+  useEffect(() => {
+    let isMounted = true;
+    async function loadPublicContract() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`${API_BASE}/public/contract?token=${encodeURIComponent(token)}`);
+        const data = await res.json();
+        if (!isMounted) return;
+
+        if (res.ok && data.success) {
+          setContractData(data);
+          setFormData({
+            first_name: data.contract.first_name || '',
+            last_name: data.contract.last_name || '',
+            child_name: data.contract.child_name || '',
+            street: data.contract.street || '',
+            house_number: data.contract.house_number || '',
+            postal_code: data.contract.postal_code || '',
+            city: data.contract.city || '',
+            phone: data.contract.phone || '',
+            email: data.contract.email || '',
+            iban: formatIban(data.contract.iban || '')
+          });
+        } else {
+          setInvalid(true);
+          setInvalidMessage(data.message || 'Dieser Vertragslink ist nicht mehr gültig.');
+        }
+      } catch {
+        if (isMounted) {
+          setInvalid(true);
+          setInvalidMessage('Verbindungsfehler beim Laden des Vertrags. Bitte überprüfen Sie Ihre Internetverbindung.');
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadPublicContract();
+    return () => { isMounted = false; };
+  }, [token]);
+
+  const handleIbanChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const formatted = formatIban(e.target.value);
+    setFormData(prev => ({ ...prev, iban: formatted }));
+  };
+
+  const handleSavePersonalData = async (e?: React.FormEvent): Promise<boolean> => {
+    if (e) e.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    // Validierung der Pflichtfelder
+    if (!formData.first_name.trim() || !formData.last_name.trim() || !formData.child_name.trim()) {
+      setError('Bitte Vorname, Nachname und den Namen des Kindes ausfüllen.');
+      return false;
+    }
+    if (!formData.street.trim() || !formData.house_number.trim() || !formData.postal_code.trim() || !formData.city.trim()) {
+      setError('Bitte die Anschrift vollständig angeben (Straße, Hausnr., PLZ und Ort).');
+      return false;
+    }
+    if (!formData.phone.trim()) {
+      setError('Bitte eine Telefonnummer für eventuelle Rückfragen angeben.');
+      return false;
+    }
+    const cleanEmail = formData.email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setError('Bitte eine gültige E-Mail-Adresse angeben.');
+      return false;
+    }
+    const cleanIban = formData.iban.replace(/\s+/g, '').toUpperCase();
+    if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
+      setError('Bitte eine gültige IBAN angeben (mindestens 15 Zeichen, z. B. DE...).');
+      return false;
+    }
+
+    setSavingPersonalData(true);
+    try {
+      const res = await fetch(`${API_BASE}/public/contract/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          first_name: formData.first_name.trim(),
+          last_name: formData.last_name.trim(),
+          child_name: formData.child_name.trim(),
+          street: formData.street.trim(),
+          house_number: formData.house_number.trim(),
+          postal_code: formData.postal_code.trim(),
+          city: formData.city.trim(),
+          phone: formData.phone.trim(),
+          email: cleanEmail,
+          iban: cleanIban
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSuccess('Ihre persönlichen Angaben wurden erfolgreich gespeichert!');
+        setIsEditingPersonalData(false);
+        return true;
+      } else {
+        setError(data.message || 'Fehler beim Speichern Ihrer Angaben.');
+        return false;
+      }
+    } catch {
+      setError('Verbindungsfehler beim Speichern Ihrer Angaben.');
+      return false;
+    } finally {
+      setSavingPersonalData(false);
+    }
+  };
+
+  const handleStartSignFlow = async () => {
+    const cleanIban = formData.iban.replace(/\s+/g, '').toUpperCase();
+    const cleanEmail = formData.email.trim();
+    const hasMissingFields = !formData.first_name.trim() ||
+      !formData.last_name.trim() ||
+      !formData.child_name.trim() ||
+      !formData.street.trim() ||
+      !formData.house_number.trim() ||
+      !formData.postal_code.trim() ||
+      !formData.city.trim() ||
+      !formData.phone.trim() ||
+      !cleanEmail ||
+      cleanIban.length < 15;
+
+    if (hasMissingFields) {
+      setIsEditingPersonalData(true);
+      setError('Bitte füllen Sie vor der Unterschrift Ihre persönlichen Vertragsdaten (Name, Anschrift, E-Mail und IBAN) vollständig aus.');
+      return;
+    }
+
+    if (isEditingPersonalData) {
+      const saved = await handleSavePersonalData();
+      if (!saved) return;
+    }
+
+    setShowSignConfirm(true);
+  };
+
+  const handleSignComplete = async (signatureData: string, signerNameInput: string) => {
+    setIsSigningSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/public/contract/sign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          signature_data: signatureData,
+          signer_name: signerNameInput
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setShowSignatureModal(false);
+        setIsCompleted(true);
+      } else {
+        setError(data.message || 'Fehler beim Abschließen des Vertrags.');
+      }
+    } catch {
+      setError('Verbindungsfehler beim Abschließen des Vertrags.');
+    } finally {
+      setIsSigningSubmitting(false);
+    }
+  };
+
+  // 1. ZUSTAND: UNGÜLTIGER ODER ABGELAUFENER LINK
+  if (invalid) {
+    return (
+      <div className="min-h-screen bg-[#141720] text-slate-200 flex flex-col items-center justify-center p-4">
+        <div className="bg-[#1F2330] border border-red-500/30 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+          <div className="w-16 h-16 rounded-2xl bg-red-500/20 text-red-400 border border-red-500/30 mx-auto flex items-center justify-center">
+            <ShieldAlert className="w-8 h-8" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Dieser Vertragslink ist nicht mehr gültig.</h2>
+          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+            {invalidMessage}
+          </p>
+          <div className="p-3.5 rounded-xl bg-[#181B24] border border-slate-800 text-xs text-slate-400">
+            Bitte wenden Sie sich bei Fragen an die Verantwortlichen des <strong className="text-slate-200 block mt-0.5">Fördervereins der Wiesel Arpke e.V.</strong>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. ZUSTAND: ERFOLGREICH UNTERSCHRIEBEN
+  if (isCompleted) {
+    return (
+      <div className="min-h-screen bg-[#141720] text-slate-200 flex flex-col items-center justify-center p-4">
+        <div className="bg-[#1F2330] border border-emerald-500/40 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-4 shadow-2xl">
+          <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 mx-auto flex items-center justify-center">
+            <CheckCircle2 className="w-8 h-8" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Vielen Dank. Der Vertrag wurde erfolgreich unterschrieben.</h2>
+          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+            Ihre Einverständniserklärung wurde verbindlich abgeschlossen und an den Förderverein übermittelt.
+          </p>
+          <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs text-emerald-300/90 leading-relaxed">
+            Dieser persönliche Vertragslink ist nun dauerhaft geschlossen. Es können keine Daten mehr eingesehen oder verändert werden.
+          </div>
+          <p className="text-[11px] text-slate-400 pt-2">
+            {VEREIN_INFO.name} · {VEREIN_INFO.addressLine}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. ZUSTAND: LÄDT
+  if (loading || !contractData) {
+    return (
+      <div className="min-h-screen bg-[#141720] text-slate-200 flex flex-col items-center justify-center p-4">
+        <div className="text-center space-y-3">
+          <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-sm text-slate-400 animate-pulse">Lade Vertrags- und Ausleihdaten...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const { rental, equipment } = contractData;
+  const rentedAtDate = rental?.rented_at || new Date().toISOString().split('T')[0];
+  const dueDate = rental?.due_date || calculateDueDate(rentedAtDate);
+  const feeAmount = contractData.contract.fee_amount !== undefined ? Number(contractData.contract.fee_amount) : (rental?.fee_total || 60.00);
+  const depositAmount = contractData.contract.deposit_amount !== undefined ? Number(contractData.contract.deposit_amount) : 50.00;
+  const totalAmount = feeAmount + depositAmount;
+
+  return (
+    <div className="min-h-screen bg-[#141720] text-slate-200 p-3 sm:p-6 flex flex-col items-center">
+      <div className="w-full max-w-3xl space-y-4">
+        
+        {/* BRANDING HEADER */}
+        <div className="bg-[#181B24] border border-slate-800 rounded-3xl p-4 sm:p-5 flex items-center justify-between gap-3 shadow-lg">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex-shrink-0">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-black text-white truncate">
+                {VEREIN_INFO.name}
+              </h1>
+              <p className="text-xs text-indigo-400 font-semibold truncate">
+                Einverständniserklärung Ausleihe Hockey-Ausrüstung
+              </p>
+            </div>
+          </div>
+          <div className="bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-lg flex-shrink-0">
+            Signier-Link
+          </div>
+        </div>
+
+        {/* FEEDBACK BANNERS */}
+        {error && (
+          <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between gap-2">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        {success && (
+          <div className="p-3.5 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              <span>{success}</span>
+            </span>
+            <button type="button" onClick={() => setSuccess(null)} className="text-emerald-400 hover:text-emerald-200">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* EINLEITUNGS-HINWEIS */}
+        <div className="p-4 rounded-2xl bg-indigo-950/20 border border-indigo-500/30 text-xs text-slate-300 leading-relaxed flex items-start gap-3 shadow-sm">
+          <ShieldCheck className="w-5 h-5 text-indigo-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <strong className="text-indigo-200 block mb-0.5">Herzlich willkommen!</strong>
+            Bitte prüfen Sie Ihre persönlichen Daten und die überlassene Ausrüstung. Sie können Ihre Angaben direkt hier ergänzen oder korrigieren. Sobald alles vollständig ist, unterzeichnen Sie den Vertrag ganz einfach unten mit dem Finger.
+          </div>
+        </div>
+
+        {/* HAUPTDOKUMENT */}
+        <div className="bg-[#181B24] p-5 sm:p-8 rounded-3xl border border-slate-700/80 shadow-2xl space-y-6 text-slate-200 text-xs sm:text-sm">
+          
+          {/* DOKUMENTEN-KOPF */}
+          <div className="border-b border-slate-800 pb-5 text-center sm:text-left sm:flex sm:items-start sm:justify-between gap-4">
+            <div>
+              <span className="text-[11px] uppercase tracking-widest text-slate-400 font-bold block mb-1">
+                {VEREIN_INFO.name}
+              </span>
+              <h2 className="text-base sm:text-xl font-black text-white tracking-tight">
+                EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                {VEREIN_INFO.addressLine}
+              </p>
+            </div>
+            <div className="mt-3 sm:mt-0 flex sm:flex-col items-center sm:items-end justify-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                Vertragsentwurf
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Stand: {formatDateDe(rentedAtDate)}
+              </span>
+            </div>
+          </div>
+
+          {/* 1. VERTRAGSPARTEIEN */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400">
+                1. Vertragsparteien
+              </h3>
+              {!isEditingPersonalData && (
+                <button
+                  type="button"
+                  onClick={() => setIsEditingPersonalData(true)}
+                  className="text-xs font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  <span>Angaben bearbeiten</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              {/* Verleiher */}
+              <div className="bg-[#1F2330] p-4 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block">Verleiher</span>
+                <p className="font-bold text-white text-sm">{VEREIN_INFO.name}</p>
+                <p className="text-slate-400">{VEREIN_INFO.addressLine}</p>
+              </div>
+
+              {/* Entleiher */}
+              <div className="bg-[#1F2330] p-4 rounded-2xl border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase text-slate-400">Entleiher / Erziehungsberechtigte(r)</span>
+                </div>
+
+                {isEditingPersonalData ? (
+                  <form onSubmit={handleSavePersonalData} className="space-y-3 pt-1">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                        Name des Kindes (Spieler/in) *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.child_name}
+                        onChange={(e) => setFormData({ ...formData, child_name: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="z. B. Tim Mustermann"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          Vorname *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.first_name}
+                          onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="Max"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          Nachname *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.last_name}
+                          onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="Mustermann"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          Straße *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.street}
+                          onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="Musterstraße"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          Hausnr. *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.house_number}
+                          onChange={(e) => setFormData({ ...formData, house_number: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="12a"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          PLZ *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.postal_code}
+                          onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="31275"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                          Ort *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.city}
+                          onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                          placeholder="Lehrte"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                        Telefonnummer *
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="0171 1234567"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                        E-Mail-Adresse *
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="max@mustermann.de"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                        IBAN (SEPA-Lastschrift) *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.iban}
+                        onChange={handleIbanChange}
+                        className="w-full px-3 py-2 rounded-xl bg-[#181B24] border border-slate-700 text-white font-mono text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="DE89 3705 0198 0000 0123 45"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="submit"
+                        disabled={savingPersonalData}
+                        className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs cursor-pointer shadow-sm disabled:opacity-50"
+                      >
+                        {savingPersonalData ? 'Speichert...' : 'Angaben übernehmen'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingPersonalData(false)}
+                        className="px-3 py-2 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-700 text-xs cursor-pointer"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <p className="font-bold text-white text-sm">
+                      {formData.first_name || 'Vorname'} {formData.last_name || 'Nachname'}
+                    </p>
+                    <p className="text-slate-300">
+                      Kind (Spieler/in): <strong className="text-blue-300">{formData.child_name || '—'}</strong>
+                    </p>
+                    <p className="text-slate-400">
+                      {formData.street || 'Straße'} {formData.house_number || ''}, {formData.postal_code || 'PLZ'} {formData.city || 'Ort'}
+                    </p>
+                    <p className="text-slate-400">
+                      Tel.: {formData.phone || '—'} · E-Mail: {formData.email || '—'}
+                    </p>
+                    <div className="pt-1 flex items-center justify-between text-slate-300 border-t border-slate-800/80">
+                      <span className="text-[11px] text-slate-400">IBAN:</span>
+                      <span className="font-mono text-white text-xs">
+                        {formData.iban ? maskIban(formData.iban) : '—'}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 2. VERLEIHZEITRAUM & FRISTEN (READ-ONLY) */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+              2. Verleihzeitraum & Fristen
+            </h3>
+            <div className="bg-[#1F2330] p-4 rounded-2xl border border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div>
+                <span className="text-slate-400 block text-[11px]">Datum der Übergabe:</span>
+                <strong className="text-white text-sm">{formatDateDe(rentedAtDate)}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[11px]">Vereinbarter Rückgabetermin:</span>
+                <strong className="text-blue-300 text-sm font-bold">{formatDateDe(dueDate)}</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. AUSLEIHE-EQUIPMENT (READ-ONLY) */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1 flex items-center justify-between">
+              <span>3. Überlassene Hockey-Ausrüstung</span>
+              <span className="text-[11px] text-slate-400 lowercase font-normal">
+                ({equipment.length} Gegenstände)
+              </span>
+            </h3>
+
+            {equipment.length === 0 ? (
+              <p className="text-xs text-slate-400 italic bg-[#1F2330] p-3 rounded-xl">Keine Ausrüstungsteile hinterlegt.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-800">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#1F2330] text-slate-400 font-bold uppercase text-[10px] border-b border-slate-800">
+                    <tr>
+                      <th className="py-2.5 px-3 w-8">Pos.</th>
+                      <th className="py-2.5 px-3">Kategorie</th>
+                      <th className="py-2.5 px-3">Marke</th>
+                      <th className="py-2.5 px-3">Größe</th>
+                      <th className="py-2.5 px-3 text-right">Inventar-Code</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/80 bg-[#181B24]">
+                    {equipment.map((item: any, idx: number) => (
+                      <tr key={item.id || idx} className="hover:bg-[#1F2330]/50">
+                        <td className="py-2 px-3 text-slate-500 font-mono">{idx + 1}</td>
+                        <td className="py-2 px-3 font-semibold text-white">{item.category_label || item.category}</td>
+                        <td className="py-2 px-3 text-slate-300">{item.brand || '—'}</td>
+                        <td className="py-2 px-3 text-slate-300">{item.size || '—'}</td>
+                        <td className="py-2 px-3 text-right font-mono text-blue-300 font-bold">{item.item_code}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* 4. GEBÜHR & KAUTION (READ-ONLY) */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+              4. Nutzungsgebühr & Sicherheitsleistung (Kaution)
+            </h3>
+            <div className="bg-[#1F2330] p-4 rounded-2xl border border-slate-800 space-y-2.5 text-xs">
+              <div className="flex justify-between items-center text-slate-300">
+                <span>Abnutzungsgebühr (Bundle für sechs Monate):</span>
+                <strong className="text-white font-mono">{feeAmount.toFixed(2)} €</strong>
+              </div>
+              <div className="flex justify-between items-center text-slate-300">
+                <span>Sicherheitsleistung / Kaution:</span>
+                <strong className="text-emerald-300 font-mono">{depositAmount.toFixed(2)} €</strong>
+              </div>
+              <div className="pt-2 border-t border-slate-700/80 flex justify-between items-center text-sm font-bold">
+                <span className="text-white">Gesamtbetrag (Zahlung per SEPA-Lastschrift):</span>
+                <span className="text-blue-300 font-mono text-base">{totalAmount.toFixed(2)} €</span>
+              </div>
+              <p className="text-[11px] text-slate-400 pt-1 leading-normal italic">
+                Hinweis: Die Kaution in Höhe von 50,00 € wird nach ordnungsgemäßer, unbeschädigter und vollständiger Rückgabe des Equipments unverzüglich erstattet.
+              </p>
+            </div>
+          </div>
+
+          {/* 5. VERTRAGSBEDINGUNGEN AUS CONTRACTTEMPLATE */}
+          <div className="space-y-4 pt-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+              {CONTRACT_META.sectionsHeading}
+            </h3>
+
+            <div className="space-y-4 text-xs text-slate-300 leading-relaxed bg-[#1F2330] p-4 sm:p-5 rounded-2xl border border-slate-800">
+              {CONTRACT_SECTIONS.map((section, idx) => (
+                <div
+                  key={section.id}
+                  className={`space-y-1.5 ${idx > 0 ? 'pt-2 border-t border-slate-700/60' : ''}`}
+                >
+                  <h4 className="font-bold text-white text-xs">
+                    {section.title}
+                  </h4>
+                  {section.paragraphs.map((para, pIdx) => (
+                    <p key={pIdx}>{para}</p>
+                  ))}
+                  {section.bulletPoints && section.bulletPoints.length > 0 && (
+                    <ul className="list-disc list-inside space-y-1 pl-1 text-slate-300">
+                      {section.bulletPoints.map((bp, bIdx) => (
+                        <li key={bIdx}>{bp}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {section.afterBulletsParagraph && (
+                    <p className="pt-1">{section.afterBulletsParagraph}</p>
+                  )}
+                </div>
+              ))}
+
+              {/* Bestätigungen bei Übergabe */}
+              <div className="space-y-2.5 pt-2 border-t border-slate-700/60">
+                <h4 className="font-bold text-white text-xs">
+                  {CONTRACT_CONFIRMATION.title}
+                </h4>
+                <p>
+                  {CONTRACT_CONFIRMATION.receiptPrefix}{' '}
+                  <strong className="text-white font-medium">
+                    {formatDateDe(rentedAtDate) || '—'}
+                  </strong>{' '}
+                  {CONTRACT_CONFIRMATION.receiptSuffix}
+                </p>
+                <div className="p-2.5 rounded-xl bg-[#181B24] border border-slate-700/60 flex items-center justify-between text-xs">
+                  <span className="text-slate-300 font-medium">Vereinbarter Rückgabetermin:</span>
+                  <strong className="text-blue-300 font-bold">{formatDateDe(dueDate)}</strong>
+                </div>
+                <p className="font-semibold text-slate-200">
+                  {CONTRACT_CONFIRMATION.directDebitNotice}
+                </p>
+                <div className="p-3 rounded-xl bg-[#181B24] border border-slate-700/60 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400 font-bold uppercase text-[11px]">
+                      {CONTRACT_CONFIRMATION.ibanLabel}
+                    </span>
+                    <span className="font-mono text-white tracking-widest text-xs sm:text-sm font-semibold">
+                      {formData.iban ? (showFullIbanInPreview ? formData.iban : maskIban(formData.iban)) : '—'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFullIbanInPreview(!showFullIbanInPreview)}
+                    className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer px-2 py-1 rounded bg-[#252936] hover:bg-slate-700 border border-slate-700/60 transition-colors"
+                  >
+                    {showFullIbanInPreview ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    <span>{showFullIbanInPreview ? 'Verbergen' : 'Anzeigen'}</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  {CONTRACT_CONFIRMATION.bankRefundNotice}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* 6. UNTERSCHRIFTENBEREICH */}
+          <div className="pt-4 border-t border-slate-800 space-y-3">
+            <div className="flex justify-between items-center text-xs text-slate-400">
+              <span>Ort, Datum: {VEREIN_INFO.city}, {formatDateDe(rentedAtDate) || '—'}</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              <div className="p-4 rounded-2xl border border-slate-800 bg-[#1F2330] text-center space-y-4">
+                <div className="h-16 flex items-center justify-center">
+                  <span className="text-sm text-slate-300 font-serif italic">{VEREIN_INFO.name}</span>
+                </div>
+                <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
+                  Unterschrift Verleiher ({VEREIN_INFO.name})
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl border border-slate-700 bg-[#1F2330] text-center space-y-2">
+                <button
+                  type="button"
+                  onClick={handleStartSignFlow}
+                  className="w-full min-h-[5.5rem] py-3.5 px-4 flex flex-col items-center justify-center text-slate-300 bg-[#181B24] hover:bg-[#1E2330] active:scale-[0.98] rounded-xl border-2 border-dashed border-indigo-500/50 hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all cursor-pointer group shadow-sm"
+                  title="Hier tippen, um den Vertrag digital zu unterschreiben"
+                >
+                  <span className="text-xs sm:text-sm font-bold text-indigo-300 group-hover:text-indigo-200 flex items-center gap-1.5">
+                    <PenTool className="w-4 h-4 text-indigo-400 group-hover:text-indigo-300" />
+                    <span>Digitale Unterschrift</span>
+                  </span>
+                  <span className="text-[11px] sm:text-xs font-medium text-slate-400 group-hover:text-slate-200 mt-1.5 flex items-center gap-1">
+                    <span>Noch nicht unterschrieben – hier tippen zum Unterschreiben</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-indigo-400 group-hover:translate-x-0.5 transition-transform" />
+                  </span>
+                </button>
+                <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
+                  Unterschrift Entleiher (gesetzl. Vertreter)
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* BOTTOM ACTION BUTTON */}
+        <div className="pt-2 flex justify-center pb-8">
+          <button
+            type="button"
+            onClick={handleStartSignFlow}
+            className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl transition-all active:scale-95 cursor-pointer"
+          >
+            <PenTool className="w-5 h-5" />
+            <span>Vertrag jetzt verbindlich unterschreiben</span>
+          </button>
+        </div>
+
+      </div>
+
+      {/* BESTÄTIGUNGSDIALOG VOR UNTERSCHRIFT */}
+      <ConfirmModal
+        show={showSignConfirm}
+        title="Vertrag verbindlich abschließen?"
+        message="Bitte prüfen Sie alle Angaben sorgfältig. Mit Ihrer Unterschrift wird der Ausleihvertrag rechtsverbindlich geschlossen. Eine nachträgliche Bearbeitung ist danach über diesen Link nicht mehr möglich."
+        onCancel={() => setShowSignConfirm(false)}
+        onConfirm={() => {
+          setShowSignConfirm(false);
+          setShowSignatureModal(true);
+        }}
+        confirmText="Weiter zur Unterschrift"
+        cancelText="Abbrechen"
+        isDanger={false}
+      />
+
+      {/* SIGNATUR-PAD MODAL */}
+      <SignatureModal
+        show={showSignatureModal}
+        rentalId={rental?.id}
+        initialSignerName={`${formData.first_name} ${formData.last_name}`.trim()}
+        onCancel={() => setShowSignatureModal(false)}
+        onConfirm={handleSignComplete}
+        isSubmitting={isSigningSubmitting}
+      />
+    </div>
+  );
+};
 
 // TAB BUTTON (Desktop Header)
 function TabButton({ active, onClick, icon, label, count }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, count?: number }) {
