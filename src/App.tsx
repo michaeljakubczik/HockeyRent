@@ -193,6 +193,11 @@ export default function App() {
     message: string;
   } | null>(null);
 
+  const [confirmReturnRental, setConfirmReturnRental] = useState<{
+    id: number;
+    renterName: string;
+  } | null>(null);
+
   const [currentView, setCurrentView] = useState<View>('available');
   // Segment-Umschaltung in Ausleihen: Standardmäßig "Aktuell"
   const [rentalsSubTab, setRentalsSubTab] = useState<'active' | 'completed'>('active');
@@ -629,7 +634,11 @@ export default function App() {
         if (editingBundleRental?.id === rentalId) {
           setEditingBundleRental(null);
         }
-        fetchItems(password);
+        await fetchItems(password);
+        setCurrentView('history');
+        setRentalsSubTab('completed');
+        setSuccess('Ausleihe vollständig zurückgegeben.');
+        setTimeout(() => setSuccess(null), 3000);
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler bei der Rückgabe');
@@ -1866,7 +1875,7 @@ export default function App() {
                         isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : true}
                         onToggle={() => toggleRentalAccordion(rental.id, true)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
-                        onReturnAll={() => handleReturnRental(rental.id)}
+                        onReturnAll={() => setConfirmReturnRental({ id: rental.id, renterName: rental.renter_name })}
                         onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(rental.id, itemId, note)}
                         onExchangeItem={(item) => startExchange(rental, item)}
                         onAddItem={() => startAddItem(rental)}
@@ -2220,6 +2229,26 @@ export default function App() {
                 renter_name: `${savedContract.first_name} ${savedContract.last_name}` 
               } : r));
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Vollständige Rückgabe bestätigen */}
+      <AnimatePresence>
+        {confirmReturnRental && (
+          <ConfirmModal
+            show={!!confirmReturnRental}
+            title="Alles zurückgeben?"
+            message={`Möchtest du die komplette Ausleihe von ${confirmReturnRental.renterName} wirklich beenden und alle aktuell ausgeliehenen Teile zurückgeben?`}
+            onConfirm={() => {
+              const rentalId = confirmReturnRental.id;
+              setConfirmReturnRental(null);
+              handleReturnRental(rentalId);
+            }}
+            onCancel={() => setConfirmReturnRental(null)}
+            confirmText="Alles zurückgeben"
+            cancelText="Abbrechen"
+            isDanger={false}
           />
         )}
       </AnimatePresence>
@@ -2776,25 +2805,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 Aktuell ausgeliehenes Equipment ({activeItems.length}):
               </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={onAddItem}
-                  className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 hover:underline cursor-pointer"
-                  title="Neues Equipmentteil zu dieser Ausleihe hinzufügen"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Teil hinzufügen</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onEditBundle}
-                  className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 hover:underline cursor-pointer"
-                >
-                  <Edit className="w-3.5 h-3.5" />
-                  <span>Bundle bearbeiten</span>
-                </button>
-              </div>
+
             </div>
 
             {activeItems.length === 0 ? (
@@ -5387,8 +5398,11 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
       const data = await res.json();
       if (res.ok && data.success) {
         setSuccess('Ihre Angaben wurden übernommen. Bitte prüfen Sie jetzt den vollständigen Vertrag.');
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         setIsEditingPersonalData(false);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        window.setTimeout(() => window.scrollTo({ top: 0, behavior: 'auto' }), 0);
         return true;
       } else {
         setError(data.message || 'Fehler beim Speichern Ihrer Angaben.');
@@ -5557,19 +5571,19 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Name des Kindes (Spieler/in) *</label>
                 <input type="text" required value={formData.child_name} onChange={(e) => setFormData({ ...formData, child_name: e.target.value })}
-                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="z. B. Tim Mustermann" />
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="z. B. Tim Mustermann" />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Vorname *</label>
                   <input type="text" required value={formData.first_name} onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Max" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Max" />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Nachname *</label>
                   <input type="text" required value={formData.last_name} onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Mustermann" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Mustermann" />
                 </div>
               </div>
 
@@ -5577,12 +5591,12 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Straße *</label>
                   <input type="text" required value={formData.street} onChange={(e) => setFormData({ ...formData, street: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Musterstraße" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Musterstraße" />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Hausnr. *</label>
                   <input type="text" required value={formData.house_number} onChange={(e) => setFormData({ ...formData, house_number: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="12a" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="12a" />
                 </div>
               </div>
 
@@ -5590,31 +5604,31 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">PLZ *</label>
                   <input type="text" required value={formData.postal_code} onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="31275" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="31275" />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Ort *</label>
                   <input type="text" required value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Lehrte" />
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Lehrte" />
                 </div>
               </div>
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Telefonnummer *</label>
                 <input type="tel" required value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="0171 1234567" />
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="0171 1234567" />
               </div>
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">E-Mail-Adresse *</label>
                 <input type="email" required value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="max@mustermann.de" />
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="max@mustermann.de" />
               </div>
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">IBAN (SEPA-Lastschrift) *</label>
                 <input type="text" required value={formData.iban} onChange={handleIbanChange}
-                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="DE89 3705 0198 0000 0123 45" />
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white font-mono text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="DE89 3705 0198 0000 0123 45" />
               </div>
 
               <button type="submit" disabled={savingPersonalData}
