@@ -2659,89 +2659,79 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
-      <div 
-        onClick={onToggle}
-        className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
-      >
-        <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white leading-snug whitespace-normal break-words">
+      {/* Übersichtliche Kopfzeile der aktiven Ausleihe */}
+      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-slate-800/70">
+        <div className="min-w-0">
+          <h4 className="text-lg sm:text-xl font-bold text-white leading-snug whitespace-normal break-words">
             {rental.renter_name}
           </h4>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-1">
-            <span>{formatDateDe(rental.rented_at)} → {rental.due_date ? formatDateDe(rental.due_date) : '–'}</span>
-            <span>·</span>
+
+          <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs sm:text-sm">
+            <span className="text-slate-400">Verliehen:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.rented_at)}</strong>
+            <span className="text-slate-400">Rückgabe:</span>
+            <strong className="text-slate-100">{rental.due_date ? formatDateDe(rental.due_date) : '–'}</strong>
+            <span className="text-slate-400">Gebühr:</span>
+            <strong className="text-slate-100">{rental.fee_total.toFixed(2)} €</strong>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+            className={`mt-3 min-w-[112px] px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all cursor-pointer ${
+              rental.paid
+                ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
+                : 'text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/30'
+            }`}
+            title={rental.paid ? 'Zahlungsstatus wieder auf offen setzen' : 'Zahlung als eingegangen markieren'}
+          >
+            {rental.paid ? '✓ Bezahlt' : 'Offen'}
+          </button>
+
+          <div className="mt-3 flex flex-col items-start gap-1.5 text-xs">
+            {rental.contract?.status === 'signed' ? (
+              <span className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Vertrag vorhanden
+              </span>
+            ) : rental.contract ? (
+              <span className="font-semibold text-indigo-300 flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5" />
+                Vertragsentwurf vorhanden
+              </span>
+            ) : (
+              <span className="font-semibold text-slate-400 flex items-center gap-1.5">
+                <XCircle className="w-3.5 h-3.5" />
+                Vertrag fehlt
+              </span>
+            )}
             <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-            <span>·</span>
-            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract?.status === 'signed' ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1" title="Vertrag vorhanden und unterschrieben">
-              <ShieldCheck className="w-3 h-3 text-emerald-400" />
-              <span>Vertrag ✓</span>
-            </span>
-          ) : rental.contract ? (
-            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1" title="Vertragsentwurf vorhanden">
-              <FileText className="w-3 h-3 text-indigo-400" />
-              <span>Vertrag •</span>
-            </span>
-          ) : (
-            <span className="text-[10px] sm:text-xs font-bold text-slate-400 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded-md flex items-center gap-1" title="Noch kein Vertrag vorhanden">
-              <XCircle className="w-3 h-3 text-slate-500" />
-              <span>Vertrag fehlt</span>
-            </span>
-          )}
-
-          {rental.paid ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Bezahlt
-            </span>
-          ) : (
-            <span className="text-[10px] sm:text-xs font-bold text-red-300 bg-red-500/15 border border-red-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Offen
-            </span>
-          )}
-
-          <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </div>
+        <div className="flex flex-col items-center justify-start gap-2">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="p-2 rounded-xl bg-[#181B24] text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 transition-colors cursor-pointer"
+            title={isExpanded ? 'Ausleihe einklappen' : 'Ausleihe aufklappen'}
+          >
+            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors cursor-pointer"
+            title="Ausleihe löschen"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
       {/* Aufgeklappter Detailbereich für aktive Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          {/* Kompakte Ausleihdaten: drei saubere Zeilen + Zahlungsstatus rechts */}
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 bg-[#181B24] p-3.5 rounded-xl border border-slate-700/60 text-xs">
-            <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1.5 text-slate-400">
-              <span>Ausgeliehen:</span>
-              <strong className="text-white">{formatDateDe(rental.rented_at)}</strong>
-              <span>Rückgabe:</span>
-              <strong className="text-white">{rental.due_date ? formatDateDe(rental.due_date) : '–'}</strong>
-              <span>Gebühr:</span>
-              <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong>
-            </div>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-              className={`self-center min-w-[82px] px-3 py-2 rounded-xl border font-bold text-xs transition-all cursor-pointer flex items-center justify-center ${
-                rental.paid
-                  ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700'
-                  : 'text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
-              }`}
-              title={rental.paid ? 'Zahlungsstatus wieder auf offen setzen' : 'Zahlung als eingegangen markieren'}
-            >
-              {rental.paid ? '✓ Bezahlt' : '✓ Bezahlt'}
-            </button>
-          </div>
-
           {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"- & "Tauschen"-Aktion */}
           <div>
             <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -2756,42 +2746,45 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                 {activeItems.map(item => (
-                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0 w-full">
-                      <div className="w-12 h-12 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                        {item.image ? (
-                          <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-slate-600">
-                            <Package className="w-4 h-4" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-bold text-white whitespace-normal break-words">{item.category_label}</p>
-                        <p className="text-[11px] text-slate-400 whitespace-normal break-words">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
-                      </div>
+                  <div key={item.id} className="bg-[#181B24] rounded-xl border border-slate-700/60 overflow-hidden flex min-h-[116px]">
+                    <div className="w-[108px] sm:w-[116px] self-stretch bg-[#252936] border-r border-slate-700/60 flex-shrink-0">
+                      {item.image ? (
+                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full min-h-[116px] flex items-center justify-center text-slate-600">
+                          <Package className="w-7 h-7" />
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center justify-end gap-1.5 flex-shrink-0 w-full sm:w-auto pl-14 sm:pl-0">
-                      <button
-                        type="button"
-                        onClick={() => onExchangeItem(item)}
-                        className="px-2 py-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
-                        title="Dieses Teil austauschen"
-                      >
-                        <ArrowRightLeft className="w-3 h-3" />
-                        <span>Tauschen</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onReturnSingleItem(item.id)}
-                        className="px-2 py-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
-                        title="Dieses Teil einzeln zurücknehmen"
-                      >
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>Zurück</span>
-                      </button>
+                    <div className="min-w-0 flex-1 p-3 flex flex-col justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white leading-snug whitespace-normal break-words">{item.category_label}</p>
+                        <p className="mt-1 text-[11px] text-slate-400 leading-relaxed whitespace-normal break-words">
+                          {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 w-full">
+                        <button
+                          type="button"
+                          onClick={() => onExchangeItem(item)}
+                          className="min-w-0 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil austauschen"
+                        >
+                          <ArrowRightLeft className="w-3 h-3 flex-shrink-0" />
+                          <span>Tauschen</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onReturnSingleItem(item.id)}
+                          className="min-w-0 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil einzeln zurücknehmen"
+                        >
+                          <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+                          <span>Zurück</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -2869,13 +2862,6 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
               </button>
             )}
 
-            <div className="flex justify-end">
-              <button type="button" onClick={onDelete}
-                className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                title="Ausleihe löschen">
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
           </div>
         </div>
       )}
