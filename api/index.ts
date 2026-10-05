@@ -1,8 +1,8 @@
 import express from "express";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import { generateContractPdf } from "../src/pdfGenerator";
-import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate";
+import { generateContractPdf } from "../src/pdfGenerator.js";
+import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate.js";
 
 dotenv.config();
 

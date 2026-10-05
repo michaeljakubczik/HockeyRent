@@ -1,6 +1,6 @@
 import { PDFDocument, rgb, StandardFonts, PDFFont, PDFPage } from 'pdf-lib';
-import { ContractSnapshot, VEREIN_INFO } from './contractTemplate';
-import { ContractEquipmentSnapshotItem } from './types';
+import { ContractSnapshot, VEREIN_INFO } from './contractTemplate.js';
+import type { ContractEquipmentSnapshotItem } from './types.js';
 
 export interface GenerateContractPdfParams {
   rentalId: number;
