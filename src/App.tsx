@@ -28,10 +28,13 @@ import {
   Eye,
   EyeOff,
   ShieldCheck,
-  Lock
+  Lock,
+  Download,
+  PenTool
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
+import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
 
 const API_BASE = '/api';
 
@@ -64,6 +67,23 @@ export function formatDateDe(dateStr?: string | null): string {
     return `${match[3]}.${match[2]}.${match[1]}`;
   }
   return dateStr;
+}
+
+// Formatierung Datum & Uhrzeit für Signatur (DD.MM.YYYY um HH:MM Uhr)
+export function formatDateTimeDe(isoStr?: string | null): string {
+  if (!isoStr) return '—';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day}.${month}.${year} um ${hours}:${minutes} Uhr`;
+  } catch {
+    return isoStr;
+  }
 }
 
 // IBAN formatieren in 4er-Blöcke (z. B. DE89 3705 0198 0000 0123 45)
@@ -683,6 +703,34 @@ export default function App() {
       }
     } catch (err) {
       setError('Fehler beim Aktualisieren der Details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Signiertes Vertrags-PDF herunterladen / öffnen
+  const handleDownloadPdf = async (targetRentalId: number) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${targetRentalId}/contract/pdf`, {
+        headers: { 'x-admin-password': password }
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        setError(errJson?.message || 'Fehler beim Laden des Vertrags-PDFs.');
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Ausleihvertrag_${targetRentalId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => window.URL.revokeObjectURL(url), 2000);
+    } catch (err: any) {
+      setError('Fehler beim Herunterladen des Vertrags-PDFs.');
     } finally {
       setLoading(false);
     }
@@ -1779,6 +1827,7 @@ export default function App() {
                         onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract ? 'preview' : 'form' })}
+                        onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
                     ))
                   )}
@@ -1800,6 +1849,7 @@ export default function App() {
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: 'preview' })}
+                        onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
                     ))
                   )}
@@ -2491,6 +2541,7 @@ interface ActiveRentalCardProps {
   onEditBundle: () => void;
   onDelete: () => void;
   onOpenContract: () => void;
+  onDownloadPdf?: () => void;
 }
 
 const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
@@ -2504,7 +2555,8 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   onAddItem,
   onEditBundle,
   onDelete,
-  onOpenContract
+  onOpenContract,
+  onDownloadPdf
 }) => {
   const activeItems = rental.items || [];
   const itemCount = activeItems.length;
@@ -2539,12 +2591,17 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract && (
+          {rental.contract?.status === 'signed' ? (
+            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+              <span>Vertrag signiert</span>
+            </span>
+          ) : rental.contract ? (
             <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
               <FileText className="w-3 h-3 text-indigo-400" />
               <span>Vertrag</span>
             </span>
-          )}
+          ) : null}
 
           {rental.paid ? (
             <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
@@ -2595,6 +2652,57 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Vertragsstatus & Schnellzugriff (Aktive Ausleihe) */}
+          {rental.contract && (
+            <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
+              rental.contract.status === 'signed'
+                ? 'bg-emerald-950/25 border-emerald-500/35 text-emerald-200'
+                : 'bg-indigo-950/25 border-indigo-500/35 text-indigo-200'
+            }`}>
+              <div className="flex items-center gap-2.5 min-w-0">
+                {rental.contract.status === 'signed' ? (
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                ) : (
+                  <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                )}
+                <div className="min-w-0">
+                  {rental.contract.status === 'signed' ? (
+                    <p className="truncate">
+                      <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
+                      {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
+                    </p>
+                  ) : (
+                    <p className="truncate">
+                      <strong>Vertragsentwurf erfasst</strong> (noch nicht unterschrieben)
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {rental.contract.status === 'signed' && onDownloadPdf && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                    title="Signiertes Vertrags-PDF herunterladen"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>PDF laden</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
+                  className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{rental.contract.status === 'signed' ? 'Vertrag ansehen' : 'Entwurf prüfen'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"- & "Tauschen"-Aktion */}
           <div>
@@ -2708,8 +2816,19 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 title="Einverständniserklärung / Ausleihvertrag anzeigen oder ausfüllen"
               >
                 <FileText className="w-3.5 h-3.5" />
-                <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag anlegen'}</span>
+                <span>{rental.contract ? (rental.contract.status === 'signed' ? 'Vertrag anzeigen' : 'Vertrag unterschreiben') : 'Vertrag anlegen'}</span>
               </button>
+              {rental.contract?.status === 'signed' && onDownloadPdf && (
+                <button
+                  type="button"
+                  onClick={onDownloadPdf}
+                  className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  title="Signiertes Vertrags-PDF herunterladen"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>PDF herunterladen</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onAddItem}
@@ -2759,6 +2878,7 @@ interface CompletedRentalCardProps {
   onMarkAsPaid: (paid?: boolean) => void;
   onDelete: () => void;
   onOpenContract?: () => void;
+  onDownloadPdf?: () => void;
 }
 
 const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
@@ -2767,7 +2887,8 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   onToggle,
   onMarkAsPaid,
   onDelete,
-  onOpenContract
+  onOpenContract,
+  onDownloadPdf
 }) => {
   // Für abgeschlossene Ausleihen: Immer alle historischen Teile anzeigen
   const allItems = rental.all_items || rental.items || rental.all_rental_items?.map(ri => ri.item).filter((i): i is EquipmentItem => Boolean(i)) || [];
@@ -2794,12 +2915,17 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract && (
+          {rental.contract?.status === 'signed' ? (
+            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+              <span>Vertrag signiert</span>
+            </span>
+          ) : rental.contract ? (
             <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
               <FileText className="w-3 h-3 text-indigo-400" />
               <span>Vertrag</span>
             </span>
-          )}
+          ) : null}
 
           {rental.paid ? (
             <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
@@ -2854,6 +2980,18 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
                 </button>
               )}
 
+              {rental.contract?.status === 'signed' && onDownloadPdf && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Signiertes Vertrags-PDF herunterladen"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>PDF laden</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
@@ -2876,6 +3014,71 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Vertragsstatus bei abgeschlossener Ausleihe */}
+          {rental.contract ? (
+            <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
+              rental.contract.status === 'signed'
+                ? 'bg-emerald-950/25 border-emerald-500/35 text-emerald-200'
+                : 'bg-indigo-950/25 border-indigo-500/35 text-indigo-200'
+            }`}>
+              <div className="flex items-center gap-2.5 min-w-0">
+                {rental.contract.status === 'signed' ? (
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                ) : (
+                  <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                )}
+                <div className="min-w-0">
+                  {rental.contract.status === 'signed' ? (
+                    <p className="truncate">
+                      <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
+                      {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
+                    </p>
+                  ) : (
+                    <p className="truncate">
+                      <strong>Vertragsentwurf erfasst</strong>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {rental.contract.status === 'signed' && onDownloadPdf && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                    title="Signiertes PDF herunterladen"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>PDF laden</span>
+                  </button>
+                )}
+                {onOpenContract && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
+                    className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Vertrag ansehen</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : onOpenContract ? (
+            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs text-slate-400">
+              <span>Kein digitaler Vertrag für diese frühere Ausleihe hinterlegt.</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 border border-indigo-500/40 transition-all flex items-center gap-1 cursor-pointer"
+              >
+                <FileText className="w-3 h-3" />
+                <span>Vertrag nachtragen</span>
+              </button>
+            </div>
+          ) : null}
 
           {/* Verliehene Ausrüstungsteile (dauerhaft sichtbar in abgeschlossenen Vorgängen) */}
           <div>
@@ -3278,7 +3481,257 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
 };
 
 // ==============================================================================
-// 4. CONTRACT MODAL (PHASE 1: EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG)
+// 4. SIGNATURE MODAL (PHASE 2: DIGITALE UNTERSCHRIFT MIT FINGER / STIFT / MAUS)
+// ==============================================================================
+interface SignatureModalProps {
+  show: boolean;
+  rentalId: number;
+  initialSignerName: string;
+  onCancel: () => void;
+  onConfirm: (signatureData: string, signerName: string) => Promise<void>;
+  isSubmitting: boolean;
+}
+
+const SignatureModal: React.FC<SignatureModalProps> = ({
+  show,
+  rentalId,
+  initialSignerName,
+  onCancel,
+  onConfirm,
+  isSubmitting
+}) => {
+  const [signerName, setSignerName] = useState(initialSignerName);
+  const [hasDrawn, setHasDrawn] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isDrawingRef = useRef(false);
+
+  useEffect(() => {
+    setSignerName(initialSignerName);
+  }, [initialSignerName]);
+
+  // Canvas initialisieren mit Retina-Skalierung und Touch-Unterstützung
+  useEffect(() => {
+    if (!show) return;
+    setHasDrawn(false);
+    isDrawingRef.current = false;
+
+    const timer = setTimeout(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#0F172A';
+
+      const onTouchStart = (e: TouchEvent) => {
+        e.preventDefault();
+        if (isSubmitting) return;
+        const t = e.touches[0];
+        const r = canvas.getBoundingClientRect();
+        ctx.beginPath();
+        ctx.moveTo(t.clientX - r.left, t.clientY - r.top);
+        isDrawingRef.current = true;
+      };
+
+      const onTouchMove = (e: TouchEvent) => {
+        e.preventDefault();
+        if (!isDrawingRef.current || isSubmitting) return;
+        const t = e.touches[0];
+        const r = canvas.getBoundingClientRect();
+        ctx.lineTo(t.clientX - r.left, t.clientY - r.top);
+        ctx.stroke();
+        setHasDrawn(true);
+      };
+
+      const onTouchEnd = (e: TouchEvent) => {
+        e.preventDefault();
+        isDrawingRef.current = false;
+      };
+
+      canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+      canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+      canvas.addEventListener('touchend', onTouchEnd, { passive: false });
+
+      return () => {
+        canvas.removeEventListener('touchstart', onTouchStart);
+        canvas.removeEventListener('touchmove', onTouchMove);
+        canvas.removeEventListener('touchend', onTouchEnd);
+      };
+    }, 60);
+
+    return () => clearTimeout(timer);
+  }, [show, isSubmitting]);
+
+  if (!show) return null;
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isSubmitting) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const r = canvas.getBoundingClientRect();
+    ctx.beginPath();
+    ctx.moveTo(e.clientX - r.left, e.clientY - r.top);
+    isDrawingRef.current = true;
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current || isSubmitting) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const r = canvas.getBoundingClientRect();
+    ctx.lineTo(e.clientX - r.left, e.clientY - r.top);
+    ctx.stroke();
+    setHasDrawn(true);
+  };
+
+  const handleMouseUp = () => {
+    isDrawingRef.current = false;
+  };
+
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasDrawn(false);
+  };
+
+  const handleSubmit = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasDrawn || !signerName.trim() || isSubmitting) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    onConfirm(dataUrl, signerName.trim());
+  };
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-[#1F2330] border border-slate-700 rounded-3xl p-5 sm:p-6 max-w-lg w-full shadow-2xl text-left space-y-4"
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300">
+              <PenTool className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base sm:text-lg font-bold text-white">Vertrag verbindlich unterzeichnen</h3>
+              <p className="text-xs text-slate-400">Ausleihe #{rentalId} · Förderverein der Wiesel Arpke e.V.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block text-slate-300 font-bold uppercase text-[11px] mb-1">
+              Name der unterzeichnenden Person (gesetzl. Vertreter / Entleiher)
+            </label>
+            <input
+              type="text"
+              value={signerName}
+              onChange={(e) => setSignerName(e.target.value)}
+              disabled={isSubmitting}
+              placeholder="Vorname Nachname"
+              className="w-full bg-[#181B24] border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-slate-300 font-bold uppercase text-[11px]">
+                Unterschrift (Finger, Eingabestift oder Maus)
+              </label>
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={isSubmitting || !hasDrawn}
+                className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-semibold disabled:opacity-40 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Löschen</span>
+              </button>
+            </div>
+
+            {/* Canvas-Unterschriftsfeld */}
+            <div className="relative bg-white rounded-2xl border-2 border-slate-400 overflow-hidden shadow-inner h-44 touch-none">
+              <canvas
+                ref={canvasRef}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                className="w-full h-full cursor-crosshair block"
+                style={{ touchAction: 'none' }}
+              />
+              <div className="absolute bottom-5 left-6 right-6 pointer-events-none border-b border-dashed border-slate-300 flex justify-between text-[10px] text-slate-400 pb-1">
+                <span>✕ Unterschrift hier leisten</span>
+                <span>{hasDrawn ? 'Unterschrift erfasst' : 'Bitte zeichnen'}</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400 pt-1">
+              Mit dem Unterzeichnen wird der Vertrag rechtsverbindlich abgeschlossen und als unveränderliches PDF archiviert.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-2 border-t border-slate-800">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="flex-1 py-3 bg-[#181B24] hover:bg-[#282D3B] text-slate-300 border border-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
+          >
+            Abbrechen
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!hasDrawn || !signerName.trim() || isSubmitting}
+            className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+          >
+            {isSubmitting ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Wird abgeschlossen...</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-4 h-4" />
+                <span>Verbindlich unterschreiben</span>
+              </>
+            )}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+// ==============================================================================
+// 5. CONTRACT MODAL (PHASE 1 & 2: EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG)
 // Förderverein der Wiesel Arpke e.V., Am Hainhop 12, 31275 Lehrte
 // ==============================================================================
 interface ContractModalProps {
@@ -3313,6 +3766,13 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
   const [existingContract, setExistingContract] = useState<RentalContract | null>(null);
   const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
+
+  // Signatur-Status (Phase 2)
+  const [showSignConfirm, setShowSignConfirm] = useState<boolean>(false);
+  const [showSignatureModal, setShowSignatureModal] = useState<boolean>(false);
+  const [isSigningSubmitting, setIsSigningSubmitting] = useState<boolean>(false);
+
+  const isSigned = existingContract?.status === 'signed';
 
   const [formData, setFormData] = useState({
     first_name: '',
@@ -3359,7 +3819,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
               deposit_amount: data.contract.deposit_amount !== undefined ? Number(data.contract.deposit_amount) : 50.00,
               fee_amount: data.contract.fee_amount !== undefined ? Number(data.contract.fee_amount) : (data.rental?.fee_total || 60.00)
             });
-            if (initialMode === 'preview') {
+            if (data.contract.status === 'signed' || initialMode === 'preview') {
               setMode('preview');
             }
           } else {
@@ -3392,37 +3852,42 @@ const ContractModal: React.FC<ContractModalProps> = ({
   }, [rentalId, password, initialMode]);
 
   const handleIbanChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isSigned) return;
     const formatted = formatIban(e.target.value);
     setFormData(prev => ({ ...prev, iban: formatted }));
   };
 
-  const handleSaveContract = async (e?: React.FormEvent, targetMode: 'stay' | 'preview' = 'preview') => {
+  const handleSaveContract = async (e?: React.FormEvent, targetMode: 'stay' | 'preview' = 'preview'): Promise<boolean> => {
     if (e) e.preventDefault();
+    if (isSigned) {
+      setError('Dieser Vertrag ist bereits verbindlich unterschrieben und kann nicht mehr geändert werden.');
+      return false;
+    }
     setError(null);
     setSuccess(null);
 
     // Validierung der Pflichtfelder
     if (!formData.first_name.trim() || !formData.last_name.trim() || !formData.child_name.trim()) {
       setError('Bitte Vorname, Nachname und den Namen des Kindes ausfüllen.');
-      return;
+      return false;
     }
     if (!formData.street.trim() || !formData.house_number.trim() || !formData.postal_code.trim() || !formData.city.trim()) {
       setError('Bitte die Anschrift vollständig angeben (Straße, Hausnr., PLZ und Ort).');
-      return;
+      return false;
     }
     if (!formData.phone.trim()) {
       setError('Bitte eine Telefonnummer für eventuelle Rückfragen angeben.');
-      return;
+      return false;
     }
     const cleanEmail = formData.email.trim();
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       setError('Bitte eine gültige E-Mail-Adresse angeben.');
-      return;
+      return false;
     }
     const cleanIban = formData.iban.replace(/\s+/g, '').toUpperCase();
     if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
       setError('Bitte eine gültige IBAN angeben (mindestens 15 Zeichen, z. B. DE...).');
-      return;
+      return false;
     }
 
     setSaving(true);
@@ -3460,11 +3925,87 @@ const ContractModal: React.FC<ContractModalProps> = ({
         if (targetMode === 'preview') {
           setMode('preview');
         }
+        return true;
       } else {
         setError(data.message || 'Fehler beim Speichern des Vertragsentwurfs.');
+        return false;
       }
     } catch (err: any) {
       setError('Verbindungsfehler beim Speichern des Vertrags.');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Signaturprozess starten (Phase 2)
+  const handleStartSignFlow = async () => {
+    if (!existingContract) {
+      const saved = await handleSaveContract(undefined, 'preview');
+      if (!saved) return;
+    }
+    setShowSignConfirm(true);
+  };
+
+  // Verbindliche Unterschrift an Backend übertragen (Phase 2)
+  const handleSignComplete = async (signatureData: string, signerNameInput: string) => {
+    setIsSigningSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract/sign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-password': password
+        },
+        body: JSON.stringify({
+          signature_data: signatureData,
+          signer_name: signerNameInput
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExistingContract(data.contract);
+        setShowSignatureModal(false);
+        setSuccess('Vertrag erfolgreich verbindlich unterschrieben und als PDF archiviert!');
+        if (onContractSaved) {
+          onContractSaved(data.contract);
+        }
+        setMode('preview');
+      } else {
+        setError(data.message || 'Fehler beim Abschließen des Vertrags.');
+      }
+    } catch (err: any) {
+      setError('Verbindungsfehler beim Abschließen des Vertrags.');
+    } finally {
+      setIsSigningSubmitting(false);
+    }
+  };
+
+  // Signiertes Vertrags-PDF herunterladen
+  const handleDownloadSignedPdf = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract/pdf`, {
+        headers: { 'x-admin-password': password }
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        setError(errJson?.message || 'Fehler beim Laden des Vertrags-PDFs.');
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Ausleihvertrag_${rentalId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => window.URL.revokeObjectURL(url), 2000);
+    } catch (err: any) {
+      setError('Fehler beim Herunterladen des Vertrags-PDFs.');
     } finally {
       setSaving(false);
     }
@@ -3504,31 +4045,38 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* View Mode Switcher */}
-            <div className="bg-[#252936] p-1 rounded-xl border border-slate-700/70 flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setMode('form')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  mode === 'form' 
-                    ? 'bg-blue-600 text-white shadow-sm' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Formular
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('preview')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  mode === 'preview' 
-                    ? 'bg-blue-600 text-white shadow-sm' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span>Vorschau</span>
-              </button>
-            </div>
+            {isSigned ? (
+              <div className="bg-emerald-950/40 px-3 py-1.5 rounded-xl border border-emerald-500/40 flex items-center gap-1.5 text-xs text-emerald-300 font-bold">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Vertrag abgeschlossen</span>
+              </div>
+            ) : (
+              <div className="bg-[#252936] p-1 rounded-xl border border-slate-700/70 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMode('form')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    mode === 'form' 
+                      ? 'bg-blue-600 text-white shadow-sm' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Formular
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('preview')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    mode === 'preview' 
+                      ? 'bg-blue-600 text-white shadow-sm' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Vorschau</span>
+                </button>
+              </div>
+            )}
 
             <button
               type="button"
@@ -3855,6 +4403,34 @@ const ContractModal: React.FC<ContractModalProps> = ({
             /* 2. VERTRAGSVORSCHAU (EINVERSTÄNDNISERKLÄRUNG AUSLEIHE)    */
             /* ========================================================== */
             <div className="space-y-6">
+              {/* Verbindlich signiert Banner */}
+              {isSigned && (
+                <div className="p-4 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 text-xs flex flex-wrap items-center justify-between gap-3 shadow-inner">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-300 flex-shrink-0">
+                      <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <strong className="text-sm font-bold text-white block">Vertrag rechtsverbindlich abgeschlossen</strong>
+                      <span className="text-emerald-300/90 text-xs">
+                        Unterzeichnet am {formatDateTimeDe(existingContract?.signed_at)} von {existingContract?.signer_name || `${formData.first_name} ${formData.last_name}`}
+                      </span>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Vertragsinhalte und Ausrüstungs-Snapshot sind dauerhaft archiviert und können nicht mehr verändert werden.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDownloadSignedPdf}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer flex-shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>PDF herunterladen</span>
+                  </button>
+                </div>
+              )}
+
               {/* Offizielles Dokumentenblatt */}
               <div className="bg-[#181B24] p-5 sm:p-8 rounded-2xl border border-slate-700/80 shadow-xl space-y-6 text-slate-200 text-xs sm:text-sm">
                 
@@ -3862,19 +4438,26 @@ const ContractModal: React.FC<ContractModalProps> = ({
                 <div className="border-b border-slate-800 pb-5 text-center sm:text-left sm:flex sm:items-start sm:justify-between gap-4">
                   <div>
                     <span className="text-[11px] uppercase tracking-widest text-slate-400 font-bold block mb-1">
-                      Förderverein der Wiesel Arpke e.V.
+                      {VEREIN_INFO.name}
                     </span>
                     <h2 className="text-base sm:text-xl font-black text-white tracking-tight">
                       EINVERSTÄNDNISERKLÄRUNG AUSLEIHE HOCKEY-AUSRÜSTUNG
                     </h2>
                     <p className="text-xs text-slate-400 mt-1">
-                      Am Hainhop 12 · 31275 Lehrte · Ausleihe-Nr. #{rentalId}
+                      {VEREIN_INFO.addressLine} · Ausleihe-Nr. #{rentalId}
                     </p>
                   </div>
                   <div className="mt-3 sm:mt-0 flex sm:flex-col items-center sm:items-end justify-center gap-2">
-                    <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                      Entwurf (Phase 1)
-                    </span>
+                    {isSigned ? (
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                        <span>Verbindlich unterschrieben</span>
+                      </span>
+                    ) : (
+                      <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        Vertragsentwurf
+                      </span>
+                    )}
                     <span className="text-[11px] text-slate-400">
                       Stand: {formatDateDe(rentedAtDate)}
                     </span>
@@ -3889,8 +4472,8 @@ const ContractModal: React.FC<ContractModalProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                     <div className="bg-[#1F2330] p-3.5 rounded-xl border border-slate-800 space-y-1">
                       <span className="text-[10px] font-bold uppercase text-slate-400 block">Verleiher</span>
-                      <p className="font-bold text-white">Förderverein der Wiesel Arpke e.V.</p>
-                      <p className="text-slate-400">Am Hainhop 12, 31275 Lehrte</p>
+                      <p className="font-bold text-white">{VEREIN_INFO.name}</p>
+                      <p className="text-slate-400">{VEREIN_INFO.addressLine}</p>
                     </div>
 
                     <div className="bg-[#1F2330] p-3.5 rounded-xl border border-slate-800 space-y-1">
@@ -3991,69 +4574,128 @@ const ContractModal: React.FC<ContractModalProps> = ({
                   </div>
                 </div>
 
-                {/* 5. SEPA-LASTSCHRIFTMANDAT */}
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1 flex items-center justify-between">
-                    <span>5. SEPA-Lastschriftmandat</span>
-                    <button
-                      type="button"
-                      onClick={() => setShowFullIbanInPreview(!showFullIbanInPreview)}
-                      className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
-                    >
-                      {showFullIbanInPreview ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                      <span>{showFullIbanInPreview ? 'IBAN verbergen' : 'IBAN anzeigen'}</span>
-                    </button>
+                {/* 5. VERTRAGSBEDINGUNGEN */}
+                <div className="space-y-4 pt-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
+                    {CONTRACT_META.sectionsHeading}
                   </h4>
-                  <div className="bg-[#1F2330] p-4 rounded-xl border border-slate-800 text-xs text-slate-300 space-y-2.5">
-                    <p className="leading-relaxed">
-                      Ich ermächtige den <strong>Förderverein der Wiesel Arpke e.V.</strong>, Zahlungen von meinem Konto mittels Lastschrift einzuziehen. Zugleich weise ich mein Kreditinstitut an, die vom Förderverein auf mein Konto gezogenen Lastschriften einzulösen.
-                    </p>
-                    <div className="p-2.5 rounded-lg bg-[#181B24] border border-slate-700/60 flex items-center justify-between">
-                      <span className="text-slate-400 font-bold uppercase text-[10px]">IBAN:</span>
-                      <span className="font-mono text-white tracking-widest text-xs sm:text-sm">
-                        {formData.iban ? (showFullIbanInPreview ? formData.iban : maskIban(formData.iban)) : '—'}
-                      </span>
+
+                  <div className="space-y-4 text-xs text-slate-300 leading-relaxed bg-[#1F2330] p-4 sm:p-5 rounded-xl border border-slate-800">
+                    {CONTRACT_SECTIONS.map((section, idx) => (
+                      <div
+                        key={section.id}
+                        className={`space-y-1.5 ${idx > 0 ? 'pt-2 border-t border-slate-700/60' : ''}`}
+                      >
+                        <h5 className="font-bold text-white text-xs">
+                          {section.title}
+                        </h5>
+                        {section.paragraphs.map((para, pIdx) => (
+                          <p key={pIdx}>{para}</p>
+                        ))}
+                        {section.bulletPoints && section.bulletPoints.length > 0 && (
+                          <ul className="list-disc list-inside space-y-1 pl-1 text-slate-300">
+                            {section.bulletPoints.map((bp, bIdx) => (
+                              <li key={bIdx}>{bp}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {section.afterBulletsParagraph && (
+                          <p className="pt-1">{section.afterBulletsParagraph}</p>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Bestätigungen bei Übergabe (Template + dynamische Daten) */}
+                    <div className="space-y-2.5 pt-2 border-t border-slate-700/60">
+                      <h5 className="font-bold text-white text-xs">
+                        {CONTRACT_CONFIRMATION.title}
+                      </h5>
+                      <p>
+                        {CONTRACT_CONFIRMATION.receiptPrefix}{' '}
+                        <strong className="text-white font-medium">
+                          {formatDateDe(rentedAtDate) || '—'}
+                        </strong>{' '}
+                        {CONTRACT_CONFIRMATION.receiptSuffix}
+                      </p>
+                      <p className="font-semibold text-slate-200">
+                        {CONTRACT_CONFIRMATION.directDebitNotice}
+                      </p>
+                      <div className="p-3 rounded-lg bg-[#181B24] border border-slate-700/60 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 font-bold uppercase text-[11px]">
+                            {CONTRACT_CONFIRMATION.ibanLabel}
+                          </span>
+                          <span className="font-mono text-white tracking-widest text-xs sm:text-sm font-semibold">
+                            {formData.iban ? (showFullIbanInPreview ? formData.iban : maskIban(formData.iban)) : '—'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowFullIbanInPreview(!showFullIbanInPreview)}
+                          className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer px-2 py-1 rounded bg-[#252936] hover:bg-slate-700 border border-slate-700/60 transition-colors"
+                          title={showFullIbanInPreview ? 'IBAN maskieren' : 'IBAN vollständig anzeigen'}
+                        >
+                          {showFullIbanInPreview ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                          <span>{showFullIbanInPreview ? 'Verbergen' : 'Anzeigen'}</span>
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-normal">
+                        {CONTRACT_CONFIRMATION.bankRefundNotice}
+                      </p>
                     </div>
+
                   </div>
                 </div>
 
-                {/* 6. VEREINBARUNGEN / VERLEIHBEDINGUNGEN */}
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 border-b border-slate-800 pb-1">
-                    6. Verleihbedingungen & Vereinbarungen
-                  </h4>
-                  <ol className="list-decimal list-inside space-y-1.5 text-xs text-slate-300 leading-relaxed bg-[#1F2330] p-4 rounded-xl border border-slate-800">
-                    <li>Die Ausrüstung bleibt uneingeschränktes Eigentum des Fördervereins der Wiesel Arpke e.V.</li>
-                    <li>Die Ausrüstung darf ausschließlich für den regulären Hockey-Trainings- und Spielbetrieb genutzt werden.</li>
-                    <li>Die Ausrüstung ist sachgerecht zu pflegen und gemäß Herstellerempfehlungen zu reinigen.</li>
-                    <li>Bei Verlust oder Schäden, die über den gewöhnlichen Verschleiß hinausgehen, haftet der Entleiher für den Wiederbeschaffungswert.</li>
-                    <li>Das Equipment ist zum vereinbarten Rückgabetermin vollständig, gereinigt und im guten Zustand zurückzugeben.</li>
-                  </ol>
-                </div>
-
-                {/* 7. UNTERSCHRIFTENBEREICH (PHASE 2 VORSCHAU) */}
+                {/* 7. UNTERSCHRIFTENBEREICH */}
                 <div className="pt-4 border-t border-slate-800 space-y-3">
                   <div className="flex justify-between items-center text-xs text-slate-400">
-                    <span>Ort, Datum: Lehrte, {formatDateDe(rentedAtDate)}</span>
+                    <span>Ort, Datum: {VEREIN_INFO.city}, {formatDateDe(rentedAtDate) || '—'}</span>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                    <div className="p-4 rounded-xl border border-slate-800 bg-[#1F2330] text-center space-y-6">
-                      <div className="h-10 flex items-end justify-center">
-                        <span className="text-xs text-slate-400 font-serif italic">Förderverein der Wiesel Arpke e.V.</span>
+                    <div className="p-4 rounded-xl border border-slate-800 bg-[#1F2330] text-center space-y-4">
+                      <div className="h-16 flex items-center justify-center">
+                        <span className="text-sm text-slate-300 font-serif italic">{VEREIN_INFO.name}</span>
                       </div>
                       <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
-                        Unterschrift Verleiher
+                        Unterschrift Verleiher ({VEREIN_INFO.name})
                       </div>
                     </div>
 
-                    <div className="p-4 rounded-xl border border-dashed border-slate-700 bg-[#1F2330] text-center space-y-3">
-                      <div className="h-10 flex flex-col items-center justify-center text-slate-500">
-                        <span className="text-[11px] font-bold text-indigo-300">Digitale Unterschrift</span>
-                        <span className="text-[10px] text-slate-500">Folgt in Phase 2</span>
-                      </div>
-                      <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-400">
-                        Unterschrift Entleiher (gesetzl. Vertreter)
+                    <div className="p-4 rounded-xl border border-slate-700 bg-[#1F2330] text-center space-y-2">
+                      {isSigned && existingContract?.signature_data ? (
+                        <div className="h-16 flex items-center justify-center bg-white rounded-lg p-1.5 shadow-inner">
+                          <img
+                            src={existingContract.signature_data}
+                            alt="Digitale Unterschrift"
+                            className="max-h-13 max-w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="h-16 flex flex-col items-center justify-center text-slate-400 bg-[#181B24] rounded-lg border border-dashed border-indigo-500/30">
+                          <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
+                            <PenTool className="w-3.5 h-3.5" />
+                            <span>Digitale Unterschrift</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 mt-0.5">Bereit zur Unterzeichnung</span>
+                        </div>
+                      )}
+                      <div className="border-t border-slate-700 pt-1 text-[11px] text-slate-300">
+                        {isSigned ? (
+                          <>
+                            <span className="font-semibold text-white block truncate">
+                              {existingContract?.signer_name || `${formData.first_name} ${formData.last_name}`}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              Unterzeichnet am {formatDateTimeDe(existingContract?.signed_at)}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-slate-400">
+                            Unterschrift Entleiher (gesetzl. Vertreter)
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -4063,26 +4705,85 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
               {/* ACTION BUTTONS (PREVIEW) */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setMode('form')}
-                  className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md"
-                >
-                  <Edit className="w-4 h-4" />
-                  <span>Daten bearbeiten</span>
-                </button>
+                {isSigned ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleDownloadSignedPdf}
+                      className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>PDF herunterladen / öffnen</span>
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-6 py-3 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all cursor-pointer"
-                >
-                  Schließen
-                </button>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-6 py-3 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                    >
+                      Schließen
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setMode('form')}
+                        className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
+                      >
+                        <Edit className="w-4 h-4" />
+                        <span>Daten bearbeiten</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Schließen
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleStartSignFlow}
+                      className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/40"
+                    >
+                      <PenTool className="w-4 h-4" />
+                      <span>Vertrag unterschreiben</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
         </div>
+
+        {/* BESTÄTIGUNGSDIALOG VOR UNTERSCHRIFT (PHASE 2) */}
+        <ConfirmModal
+          show={showSignConfirm}
+          title="Vertrag verbindlich abschließen?"
+          message="Bitte prüfen Sie den Vertrag vollständig. Mit der Unterschrift wird der aktuelle Vertragsstand verbindlich abgeschlossen. Die Vertragsdaten und die dokumentierte Ausrüstung können danach nicht mehr verändert werden."
+          onCancel={() => setShowSignConfirm(false)}
+          onConfirm={() => {
+            setShowSignConfirm(false);
+            setShowSignatureModal(true);
+          }}
+          confirmText="Weiter zur Unterschrift"
+          cancelText="Abbrechen"
+          isDanger={false}
+        />
+
+        {/* SIGNATUR-PAD MODAL (PHASE 2) */}
+        <SignatureModal
+          show={showSignatureModal}
+          rentalId={rentalId}
+          initialSignerName={`${formData.first_name} ${formData.last_name}`.trim()}
+          onCancel={() => setShowSignatureModal(false)}
+          onConfirm={handleSignComplete}
+          isSubmitting={isSigningSubmitting}
+        />
       </motion.div>
     </div>
   );

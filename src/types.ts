@@ -79,6 +79,9 @@ export interface RentalContract {
   signer_name?: string | null;
   signature_data?: string | null;
   pdf_url?: string | null;
+  pdf_path?: string | null;
+  contract_snapshot?: any;
+  contract_version?: string | null;
   email_sent_at?: string | null;
   created_at?: string;
   updated_at?: string;

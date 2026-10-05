@@ -1,6 +1,8 @@
 import express from "express";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import { generateContractPdf } from "../src/pdfGenerator";
+import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate";
 
 dotenv.config();
 
@@ -786,7 +788,7 @@ function calculateDueDate(startDateStr: string): string {
       try {
         const { data: contractsData } = await supabase
           .from('hockey_rental_contracts')
-          .select('id, rental_id, status, updated_at, created_at, first_name, last_name, child_name');
+          .select('id, rental_id, status, signed_at, signer_name, pdf_path, pdf_url, updated_at, created_at, first_name, last_name, child_name');
         if (contractsData) {
           contractsData.forEach((c: any) => {
             contractsMap[c.rental_id] = c;
@@ -953,6 +955,20 @@ function calculateDueDate(startDateStr: string): string {
     }
 
     try {
+      // 0. Prüfen, ob bereits ein verbindlich unterschriebener Vertrag existiert (Unveränderlichkeit)
+      const { data: existingContract } = await supabase
+        .from('hockey_rental_contracts')
+        .select('id, status')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (existingContract && existingContract.status === 'signed') {
+        return res.status(409).json({ 
+          success: false, 
+          message: "Dieser Vertrag ist bereits verbindlich unterschrieben und kann nicht mehr geändert werden." 
+        });
+      }
+
       // 1. Aktuelle aktive Equipmentteile für den Snapshot ermitteln
       const { data: riData } = await supabase
         .from('hockey_rental_items')
@@ -1030,6 +1046,326 @@ function calculateDueDate(startDateStr: string): string {
         success: false, 
         message: "Der Vertrag konnte nicht dauerhaft gespeichert werden. Bitte erneut versuchen." 
       });
+    }
+  });
+
+  // POST /api/rentals/:id/contract/sign - Vertrag verbindlich abschließen und unterschreiben (Phase 2)
+  app.post("/api/rentals/:id/contract/sign", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const rentalId = Number(req.params.id);
+    const { signature_data, signer_name } = req.body;
+
+    // 1. Signaturdaten prüfen (darf nicht leer sein)
+    if (!signature_data || typeof signature_data !== 'string' || !signature_data.startsWith('data:image/png;base64,')) {
+      return res.status(400).json({
+        success: false,
+        message: "Bitte eine gültige Unterschrift zeichnen."
+      });
+    }
+
+    // Leere Leinwand abfangen (Base64-Payload muss substanziell sein)
+    const base64Data = signature_data.replace(/^data:image\/png;base64,/, '');
+    if (base64Data.length < 200) {
+      return res.status(400).json({
+        success: false,
+        message: "Die Unterschrift ist unvollständig oder leer. Bitte erneut unterschreiben."
+      });
+    }
+
+    try {
+      // 2. Rental aus der Datenbank laden
+      const { data: rental, error: rError } = await supabase
+        .from('hockey_rentals')
+        .select(`
+          id, renter_name, rented_at, due_date, returned_at, fee_total, paid,
+          hockey_rental_items(
+            item_id, returned_at,
+            hockey_equipment_items(id, item_code, brand, size, category, category_label)
+          )
+        `)
+        .eq('id', rentalId)
+        .single();
+
+      if (rError || !rental) {
+        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
+      }
+
+      // 3. Vorhandenen Vertrag laden
+      const { data: contract, error: cError } = await supabase
+        .from('hockey_rental_contracts')
+        .select('*')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (cError || !contract) {
+        return res.status(404).json({
+          success: false,
+          message: "Kein Vertragsentwurf vorhanden. Bitte zuerst die Vertragsdaten erfassen und speichern."
+        });
+      }
+
+      // Eindeutige Prüfung: Ein bereits unterschriebener Vertrag darf nicht überschrieben werden
+      if (contract.status === 'signed') {
+        return res.status(409).json({
+          success: false,
+          message: "Dieser Vertrag wurde bereits verbindlich abgeschlossen und unterschrieben."
+        });
+      }
+
+      // 4. Frischer Equipment-Snapshot serverseitig direkt aus der DB
+      const rItems = (rental.hockey_rental_items || [])
+        .filter((ri: any) => !ri.returned_at)
+        .map((ri: any) => ri.hockey_equipment_items)
+        .filter(Boolean);
+
+      const equipmentSnapshot = rItems.map((eq: any) => ({
+        id: eq.id,
+        item_code: eq.item_code,
+        category: eq.category,
+        category_label: eq.category_label || eq.category,
+        brand: eq.brand,
+        size: eq.size
+      }));
+
+      // 5. Vertragstext-Snapshot erzeugen (vollständige, unveränderliche Version)
+      const contractSnapshot = createContractSnapshot();
+      const signedAt = new Date().toISOString();
+      const effectiveSignerName = (signer_name || `${contract.first_name} ${contract.last_name}`).trim();
+
+      // 6. Finales PDF erzeugen
+      const contractForPdf = {
+        ...contract,
+        signer_name: effectiveSignerName,
+        signed_at: signedAt,
+        signature_data: signature_data,
+        equipment_snapshot: equipmentSnapshot,
+        contract_snapshot: contractSnapshot
+      };
+
+      let pdfBytes: Uint8Array;
+      try {
+        pdfBytes = await generateContractPdf({
+          rentalId,
+          contract: contractForPdf,
+          rental: {
+            id: rental.id,
+            rented_at: rental.rented_at,
+            due_date: rental.due_date
+          }
+        });
+      } catch (pdfErr: any) {
+        console.error(`[PDF Generation Error]: Rental ${rentalId} - ${pdfErr.message}`);
+        return res.status(500).json({
+          success: false,
+          message: "Fehler beim Erzeugen des Vertrags-PDFs. Bitte erneut versuchen."
+        });
+      }
+
+      // 7. Sichere Speicherung im privaten Supabase-Storage (hockey-contracts)
+      const timestamp = Date.now();
+      const storagePath = `contracts/${rentalId}/contract_${rentalId}_${timestamp}.pdf`;
+      const pdfBuffer = Buffer.from(pdfBytes);
+
+      // Bucket sicherstellen
+      try {
+        await supabase.storage.createBucket('hockey-contracts', { public: false });
+      } catch {
+        // Ignorieren falls bereits existent
+      }
+
+      const { error: uploadError } = await supabase
+        .storage
+        .from('hockey-contracts')
+        .upload(storagePath, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true
+        });
+
+      if (uploadError) {
+        console.error(`[Storage Upload Error]: Rental ${rentalId} - ${uploadError.message}`);
+        return res.status(500).json({
+          success: false,
+          message: "Das Vertrags-PDF konnte nicht im sicheren Speicher abgelegt werden. Der Vertrag wurde nicht abgeschlossen."
+        });
+      }
+
+      // 8. Vertragsdaten in der Datenbank ATOMAR von 'draft' auf 'signed' setzen
+      const updatePayload: any = {
+        status: 'signed',
+        signed_at: signedAt,
+        signer_name: effectiveSignerName,
+        signature_data: signature_data,
+        pdf_path: storagePath,
+        pdf_url: null, // Private Speicherung - niemals öffentliche URL!
+        equipment_snapshot: equipmentSnapshot,
+        contract_snapshot: contractSnapshot,
+        contract_version: CURRENT_CONTRACT_VERSION,
+        updated_at: signedAt
+      };
+
+      const { data: updatedData, error: updateError } = await supabase
+        .from('hockey_rental_contracts')
+        .update(updatePayload)
+        .eq('rental_id', rentalId)
+        .eq('status', 'draft')
+        .select();
+
+      // Fall A: Technischer Datenbankfehler
+      if (updateError) {
+        console.error(`[Contract Sign DB Error]: Rental ${rentalId} - ${updateError.message}`);
+        // Rollback: hochgeladene Datei dieses Fehlversuchs wieder entfernen
+        try {
+          await supabase.storage.from('hockey-contracts').remove([storagePath]);
+        } catch {}
+        return res.status(500).json({
+          success: false,
+          message: "Der Status des Vertrags konnte in der Datenbank nicht aktualisiert werden."
+        });
+      }
+
+      // Fall B: Race Condition / Vertrag nicht mehr im Status 'draft' (z. B. durch parallelen Request)
+      if (!updatedData || updatedData.length === 0) {
+        console.warn(`[Contract Sign Conflict]: Rental ${rentalId} - Vertrag wurde bereits durch einen parallelen Vorgang abgeschlossen.`);
+        // Rollback: Die von DIESEM unterlegenen Request hochgeladene PDF-Datei löschen
+        try {
+          // Sicherstellen, dass nicht versehentlich die Datei des bereits gewonnenen Vertrags gelöscht wird
+          const { data: existingContract } = await supabase
+            .from('hockey_rental_contracts')
+            .select('pdf_path')
+            .eq('rental_id', rentalId)
+            .maybeSingle();
+
+          if (!existingContract || existingContract.pdf_path !== storagePath) {
+            await supabase.storage.from('hockey-contracts').remove([storagePath]);
+          }
+        } catch {}
+
+        return res.status(409).json({
+          success: false,
+          message: "Dieser Vertrag wurde bereits durch einen parallelen Vorgang verbindlich abgeschlossen."
+        });
+      }
+
+      const finalizedContract = updatedData[0];
+      console.log(`[Contract Finalized]: Rental ${rentalId}, Signer: ${effectiveSignerName}, Version: ${CURRENT_CONTRACT_VERSION}`);
+
+      res.json({
+        success: true,
+        contract: finalizedContract,
+        pdf_path: storagePath
+      });
+    } catch (err: any) {
+      console.error(`[Contract Sign Exception]: Rental ${rentalId} - ${err.message}`);
+      res.status(500).json({
+        success: false,
+        message: "Unerwarteter Fehler beim Abschließen des Vertrags."
+      });
+    }
+  });
+
+  // GET /api/rentals/:id/contract/pdf - Signiertes Vertrags-PDF geschützt abrufen
+  app.get("/api/rentals/:id/contract/pdf", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const rentalId = Number(req.params.id);
+
+    try {
+      const { data: contract, error: cError } = await supabase
+        .from('hockey_rental_contracts')
+        .select('*')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (cError || !contract) {
+        return res.status(404).json({ success: false, message: "Vertrag nicht gefunden." });
+      }
+
+      if (contract.status !== 'signed') {
+        return res.status(400).json({
+          success: false,
+          message: "Für diesen Vertrag liegt noch kein unterschriebenes PDF vor."
+        });
+      }
+
+      const storagePath = contract.pdf_path || `contracts/${rentalId}/contract_${rentalId}.pdf`;
+
+      // Datei aus privatem Bucket laden
+      const { data: fileData, error: downloadError } = await supabase
+        .storage
+        .from('hockey-contracts')
+        .download(storagePath);
+
+      if (downloadError || !fileData) {
+        // Fallback: Falls Datei im Storage fehlt, aber Contract signed ist -> aus Snapshot neu generieren
+        if (contract.contract_snapshot) {
+          const { data: rental } = await supabase
+            .from('hockey_rentals')
+            .select('id, rented_at, due_date')
+            .eq('id', rentalId)
+            .single();
+
+          const pdfBytes = await generateContractPdf({
+            rentalId,
+            contract,
+            rental: rental || { id: rentalId, rented_at: contract.created_at, due_date: null }
+          });
+          
+          // Re-upload ins Storage
+          try {
+            await supabase.storage.from('hockey-contracts').upload(storagePath, Buffer.from(pdfBytes), { upsert: true });
+          } catch {}
+
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', `inline; filename="Ausleihvertrag_${rentalId}.pdf"`);
+          return res.send(Buffer.from(pdfBytes));
+        }
+
+        return res.status(404).json({
+          success: false,
+          message: "Das Vertrags-PDF konnte nicht im Speicher gefunden werden."
+        });
+      }
+
+      const arrayBuffer = await fileData.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Ausleihvertrag_${rentalId}.pdf"`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error(`[Contract PDF Download Error]: Rental ${rentalId} - ${err.message}`);
+      res.status(500).json({ success: false, message: "Fehler beim Laden des Vertrags-PDFs." });
+    }
+  });
+
+  // GET /api/rentals/:id/contract/pdf-url - Kurzlebige signierte URL für geschützten PDF-Aufruf
+  app.get("/api/rentals/:id/contract/pdf-url", authHeader, async (req, res) => {
+    const supabase = getSupabase();
+    const rentalId = Number(req.params.id);
+
+    try {
+      const { data: contract, error: cError } = await supabase
+        .from('hockey_rental_contracts')
+        .select('pdf_path, status')
+        .eq('rental_id', rentalId)
+        .maybeSingle();
+
+      if (cError || !contract || contract.status !== 'signed') {
+        return res.status(404).json({ success: false, message: "Kein unterschriebener Vertrag vorhanden." });
+      }
+
+      const storagePath = contract.pdf_path || `contracts/${rentalId}/contract_${rentalId}.pdf`;
+      const { data: signedUrlData, error: sError } = await supabase
+        .storage
+        .from('hockey-contracts')
+        .createSignedUrl(storagePath, 120); // 120 Sekunden gültig
+
+      if (sError || !signedUrlData) {
+        return res.status(500).json({ success: false, message: "Konnte keine temporäre URL erstellen." });
+      }
+
+      res.json({ success: true, signedUrl: signedUrlData.signedUrl });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
     }
   });
 
