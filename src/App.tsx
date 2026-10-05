@@ -2194,6 +2194,17 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* MODAL: SICHEREN VERTRAGSLINK ERZEUGEN / TEILEN */}
+      <AnimatePresence>
+        {shareSigningRentalId !== null && (
+          <ShareSigningLinkModal
+            rentalId={shareSigningRentalId}
+            password={password}
+            onClose={() => setShareSigningRentalId(null)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* MODAL: DIGITALER AUSLEIHVERTRAG (PHASE 1: EINVERSTÄNDNISERKLÄRUNG) */}
       <AnimatePresence>
         {contractModal && contractModal.isOpen && (
