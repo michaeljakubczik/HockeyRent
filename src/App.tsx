@@ -1732,14 +1732,14 @@ export default function App() {
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                             Ausleihdatum
                           </label>
-                          <div className="relative w-full min-w-0 max-w-full">
-                            <Calendar className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                          <div className="w-full min-w-0 max-w-full overflow-hidden">
                             <input
                               type="date"
                               required
                               value={rentForm.rented_at}
                               onChange={(e) => handleRentedAtChange(e.target.value)}
-                              className="w-full min-w-0 max-w-full block box-border pl-10 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                              className="w-full min-w-0 max-w-full block box-border px-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                              style={{ WebkitAppearance: 'none', appearance: 'none' }}
                             />
                           </div>
                         </div>
@@ -2719,31 +2719,28 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
       {/* Aufgeklappter Detailbereich für aktive Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          {/* Status- & Aktionsleiste oben */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
-            <div className="text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span>Ausgeliehen seit: <strong className="text-white">{formatDateDe(rental.rented_at)}</strong></span>
-              {rental.due_date && (
-                <span className="text-blue-300 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Rückgabe bis: <strong className="text-blue-200">{formatDateDe(rental.due_date)}</strong></span>
-                </span>
-              )}
-              <span>· Gebühr: <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong></span>
+          {/* Kompakte Ausleihdaten: drei saubere Zeilen + Zahlungsstatus rechts */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 bg-[#181B24] p-3.5 rounded-xl border border-slate-700/60 text-xs">
+            <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1.5 text-slate-400">
+              <span>Ausgeliehen:</span>
+              <strong className="text-white">{formatDateDe(rental.rented_at)}</strong>
+              <span>Rückgabe:</span>
+              <strong className="text-white">{rental.due_date ? formatDateDe(rental.due_date) : '–'}</strong>
+              <span>Gebühr:</span>
+              <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                  rental.paid 
-                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
-                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
-                }`}
-              >
-                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+              className={`self-stretch min-w-[82px] px-3 py-2 rounded-xl border font-bold text-xs transition-all cursor-pointer flex items-center justify-center ${
+                rental.paid
+                  ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700'
+                  : 'text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
+              }`}
+              title={rental.paid ? 'Zahlungsstatus wieder auf offen setzen' : 'Zahlung als eingegangen markieren'}
+            >
+              {rental.paid ? 'Bezahlt ✓' : 'Bezahlen ✓'}
+            </button>
           </div>
 
           {/* Vertragsstatus & Schnellzugriff (Aktive Ausleihe) */}
@@ -2761,12 +2758,12 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 )}
                 <div className="min-w-0">
                   {rental.contract.status === 'signed' ? (
-                    <p className="truncate">
+                    <p className="leading-relaxed whitespace-normal break-words">
                       <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
                       {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
                     </p>
                   ) : (
-                    <p className="truncate">
+                    <p className="leading-relaxed whitespace-normal break-words">
                       <strong>Vertragsentwurf erfasst</strong> (noch nicht unterschrieben)
                     </p>
                   )}
@@ -2883,75 +2880,61 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             </div>
           )}
 
-          {/* Haupt-Aktionsleiste: Bundle bearbeiten, Alles zurückgeben, Löschen */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
-            <div className="flex flex-wrap items-center gap-2">
-              {rental.contract?.status === 'signed' ? (
-                <button
-                  type="button"
-                  onClick={onOpenContract}
-                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Unterschriebenen Ausleihvertrag anzeigen"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  <span>Vertrag anzeigen</span>
-                </button>
-              ) : onOpenSigningLink ? (
-                <button
-                  type="button"
-                  onClick={() => onOpenSigningLink(rental.id)}
-                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
-                >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Link zum Unterschreiben</span>
-                </button>
-              ) : null}
-              {rental.contract?.status === 'signed' && onDownloadPdf && (
-                <button
-                  type="button"
-                  onClick={onDownloadPdf}
-                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Signiertes Vertrags-PDF herunterladen"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>PDF herunterladen</span>
-                </button>
-              )}
+          {/* Haupt-Aktionsleiste */}
+          <div className="space-y-2.5 pt-3 border-t border-slate-800">
+            {rental.contract?.status === 'signed' ? (
               <button
                 type="button"
-                onClick={onAddItem}
-                className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                onClick={onOpenContract}
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <FileText className="w-4 h-4" />
+                <span>Vertrag anzeigen</span>
+              </button>
+            ) : onOpenSigningLink ? (
+              <button
+                type="button"
+                onClick={() => onOpenSigningLink(rental.id)}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Unterschriften-Link erstellen</span>
+              </button>
+            ) : null}
+
+            <div className="grid grid-cols-3 gap-2">
+              <button type="button" onClick={onAddItem}
+                className="min-w-0 bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-2 py-2.5 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                <Plus className="w-3.5 h-3.5 flex-shrink-0" />
                 <span>Teil hinzufügen</span>
               </button>
-              <button
-                type="button"
-                onClick={onEditBundle}
-                className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-              >
-                <Edit className="w-3.5 h-3.5" />
+              <button type="button" onClick={onEditBundle}
+                className="min-w-0 bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-2 py-2.5 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                <Edit className="w-3.5 h-3.5 flex-shrink-0" />
                 <span>Bundle bearbeiten</span>
               </button>
-              <button
-                type="button"
-                onClick={onReturnAll}
-                className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/35 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Alles zurückgeben</span>
+              <button type="button" onClick={onReturnAll}
+                className="min-w-0 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/35 font-bold px-2 py-2.5 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>Alles zurück</span>
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={onDelete}
-              className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Ausleihe löschen"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            {rental.contract?.status === 'signed' && onDownloadPdf && (
+              <button type="button" onClick={onDownloadPdf}
+                className="w-full text-slate-400 hover:text-white text-xs py-1.5 flex items-center justify-center gap-1.5 cursor-pointer">
+                <Download className="w-3.5 h-3.5" />
+                <span>PDF herunterladen</span>
+              </button>
+            )}
+
+            <div className="flex justify-end">
+              <button type="button" onClick={onDelete}
+                className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Ausleihe löschen">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
