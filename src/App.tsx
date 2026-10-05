@@ -1212,7 +1212,7 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-12 p-6 bg-[#252936] rounded-2xl border border-slate-700/60 shadow-lg text-center max-w-md mx-auto">
+          <div className="mt-10 md:mt-14 p-6 md:p-7 bg-[#252936] rounded-2xl border border-slate-700/60 shadow-lg text-center max-w-md mx-auto">
             <h3 className="text-lg font-bold text-white mb-1">Admin-Bereich</h3>
             <p className="text-slate-400 mb-4 text-xs">
               Zum Verleihen oder Verwalten des Bestands mit Passwort anmelden.
@@ -1674,8 +1674,8 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  <div className="lg:col-span-2 space-y-4">
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.45fr)_minmax(380px,1fr)] gap-6 xl:gap-8 items-start">
+                  <div className="min-w-0 space-y-4">
                     <div className="flex items-center justify-between mb-2">
                       <h3 className="text-lg font-bold text-white">{bag.length} Teile ausgewählt</h3>
                       <button onClick={clearBag} className="text-sm text-red-400 hover:text-red-300 font-medium cursor-pointer">
@@ -1710,7 +1710,7 @@ export default function App() {
                     ))}
                   </div>
 
-                  <div className="bg-[#252936] p-6 rounded-3xl border border-slate-700/60 shadow-xl h-fit sticky top-24">
+                  <div className="min-w-0 w-full bg-[#252936] p-5 xl:p-6 rounded-3xl border border-slate-700/60 shadow-xl h-fit lg:sticky lg:top-24">
                     <h3 className="text-xl font-bold text-white mb-6">Verleih-Details</h3>
                     <form onSubmit={(e) => { e.preventDefault(); handleRentItems(); }} className="space-y-4">
                       <div>
@@ -1727,7 +1727,7 @@ export default function App() {
                         />
                       </div>
                       {/* Ausleihdatum und automatisch berechnetes Rückgabedatum (6 Monate) */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                         <div className="w-full min-w-0 max-w-full">
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                             Ausleihdatum
@@ -1748,9 +1748,9 @@ export default function App() {
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                             Rückgabe bis
                           </label>
-                          <div className="px-4 py-3 rounded-xl bg-[#181B24] border border-blue-500/40 text-blue-300 font-bold text-base sm:text-sm flex items-center justify-between">
-                            <span>{formatDateDe(rentForm.due_date)}</span>
-                            <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 uppercase tracking-wider">
+                          <div className="min-w-0 px-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-slate-200 font-bold text-base sm:text-sm flex items-center justify-between gap-2">
+                            <span className="min-w-0 whitespace-nowrap">{formatDateDe(rentForm.due_date)}</span>
+                            <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300 uppercase tracking-wider">
                               6 Mon.
                             </span>
                           </div>
@@ -2665,7 +2665,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
         className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
       >
         <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white truncate">
+          <h4 className="text-base sm:text-lg font-bold text-white leading-snug whitespace-normal break-words">
             {rental.renter_name}
           </h4>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
@@ -2834,7 +2834,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                       <button
                         type="button"
                         onClick={() => onExchangeItem(item)}
-                        className="px-2 py-1 text-[11px] font-semibold text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                        className="px-2 py-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
                         title="Dieses Teil austauschen"
                       >
                         <ArrowRightLeft className="w-3 h-3" />
@@ -2843,7 +2843,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                       <button
                         type="button"
                         onClick={() => onReturnSingleItem(item.id)}
-                        className="px-2 py-1 text-[11px] font-semibold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 rounded-lg border border-amber-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                        className="px-2 py-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center gap-1 cursor-pointer"
                         title="Dieses Teil einzeln zurücknehmen"
                       >
                         <CheckCircle2 className="w-3 h-3" />
@@ -2890,7 +2890,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 <button
                   type="button"
                   onClick={onOpenContract}
-                  className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
                   title="Unterschriebenen Ausleihvertrag anzeigen"
                 >
                   <FileText className="w-3.5 h-3.5" />
@@ -2900,7 +2900,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 <button
                   type="button"
                   onClick={() => onOpenSigningLink(rental.id)}
-                  className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
                   title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
                 >
                   <Share2 className="w-3.5 h-3.5" />
@@ -2911,7 +2911,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 <button
                   type="button"
                   onClick={onDownloadPdf}
-                  className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
                   title="Signiertes Vertrags-PDF herunterladen"
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -2929,7 +2929,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
               <button
                 type="button"
                 onClick={onEditBundle}
-                className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                className="bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
               >
                 <Edit className="w-3.5 h-3.5" />
                 <span>Bundle bearbeiten</span>
@@ -2937,7 +2937,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
               <button
                 type="button"
                 onClick={onReturnAll}
-                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/35 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Alles zurückgeben</span>
@@ -2991,7 +2991,7 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
         className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
       >
         <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white truncate">
+          <h4 className="text-base sm:text-lg font-bold text-white leading-snug whitespace-normal break-words">
             {rental.renter_name}
           </h4>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
