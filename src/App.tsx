@@ -2659,13 +2659,12 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Übersichtliche Kopfzeile der aktiven Ausleihe */}
-      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-slate-800/70">
+      {/* Kompakte Kopfzeile: Stammdaten links, Status mittig, Aktionen rechts */}
+      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 sm:gap-4 items-start border-b border-slate-800/70">
         <div className="min-w-0">
           <h4 className="text-lg sm:text-xl font-bold text-white leading-snug whitespace-normal break-words">
             {rental.renter_name}
           </h4>
-
           <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs sm:text-sm">
             <span className="text-slate-400">Verliehen:</span>
             <strong className="text-slate-100">{formatDateDe(rental.rented_at)}</strong>
@@ -2674,11 +2673,13 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             <span className="text-slate-400">Gebühr:</span>
             <strong className="text-slate-100">{rental.fee_total.toFixed(2)} €</strong>
           </div>
+        </div>
 
+        <div className="min-w-[116px] pt-0.5 flex flex-col items-stretch gap-2.5">
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-            className={`mt-3 min-w-[112px] px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all cursor-pointer ${
+            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all cursor-pointer ${
               rental.paid
                 ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
                 : 'text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/30'
@@ -2688,42 +2689,34 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             {rental.paid ? '✓ Bezahlt' : 'Offen'}
           </button>
 
-          <div className="mt-3 flex flex-col items-start gap-1.5 text-xs">
-            {rental.contract?.status === 'signed' ? (
-              <span className="font-semibold text-emerald-300 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                Vertrag vorhanden
-              </span>
-            ) : rental.contract ? (
-              <span className="font-semibold text-indigo-300 flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5" />
-                Vertragsentwurf vorhanden
-              </span>
-            ) : (
-              <span className="font-semibold text-slate-400 flex items-center gap-1.5">
-                <XCircle className="w-3.5 h-3.5" />
-                Vertrag fehlt
-              </span>
-            )}
-            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-          </div>
+          {rental.contract?.status === 'signed' ? (
+            <span className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+              Vertrag vorhanden
+            </span>
+          ) : rental.contract ? (
+            <span className="text-[11px] font-semibold text-indigo-300 flex items-center gap-1.5">
+              <FileText className="w-3.5 h-3.5 flex-shrink-0" />
+              Entwurf vorhanden
+            </span>
+          ) : (
+            <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+              <XCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              Vertrag fehlt
+            </span>
+          )}
+          <span className="text-xs font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
         </div>
 
-        <div className="flex flex-col items-center justify-start gap-2">
-          <button
-            type="button"
-            onClick={onToggle}
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" onClick={onToggle}
             className="p-2 rounded-xl bg-[#181B24] text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 transition-colors cursor-pointer"
-            title={isExpanded ? 'Ausleihe einklappen' : 'Ausleihe aufklappen'}
-          >
+            title={isExpanded ? 'Ausleihe einklappen' : 'Ausleihe aufklappen'}>
             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }}
             className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors cursor-pointer"
-            title="Ausleihe löschen"
-          >
+            title="Ausleihe löschen">
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
@@ -2746,41 +2739,35 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                 {activeItems.map(item => (
-                  <div key={item.id} className="bg-[#181B24] rounded-xl border border-slate-700/60 overflow-hidden flex min-h-[116px]">
-                    <div className="w-[108px] sm:w-[116px] self-stretch bg-[#252936] border-r border-slate-700/60 flex-shrink-0">
+                  <div key={item.id} className="bg-[#181B24] h-[104px] rounded-xl border border-slate-700/60 p-2.5 flex items-stretch gap-3 overflow-hidden">
+                    <div className="w-[82px] h-full rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
                       {item.image ? (
-                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" />
                       ) : (
-                        <div className="w-full h-full min-h-[116px] flex items-center justify-center text-slate-600">
-                          <Package className="w-7 h-7" />
+                        <div className="w-full h-full flex items-center justify-center text-slate-600">
+                          <Package className="w-6 h-6" />
                         </div>
                       )}
                     </div>
 
-                    <div className="min-w-0 flex-1 p-3 flex flex-col justify-between gap-3">
+                    <div className="min-w-0 flex-1 flex flex-col justify-between py-0.5">
                       <div className="min-w-0">
-                        <p className="text-sm font-bold text-white leading-snug whitespace-normal break-words">{item.category_label}</p>
-                        <p className="mt-1 text-[11px] text-slate-400 leading-relaxed whitespace-normal break-words">
+                        <p className="text-sm font-bold text-white leading-tight whitespace-normal break-words line-clamp-2">{item.category_label}</p>
+                        <p className="mt-1 text-[11px] text-slate-400 leading-tight whitespace-nowrap overflow-hidden text-ellipsis">
                           {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
                         </p>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 w-full">
-                        <button
-                          type="button"
-                          onClick={() => onExchangeItem(item)}
-                          className="min-w-0 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
-                          title="Dieses Teil austauschen"
-                        >
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => onExchangeItem(item)}
+                          className="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil austauschen">
                           <ArrowRightLeft className="w-3 h-3 flex-shrink-0" />
                           <span>Tauschen</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => onReturnSingleItem(item.id)}
-                          className="min-w-0 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
-                          title="Dieses Teil einzeln zurücknehmen"
-                        >
+                        <button type="button" onClick={() => onReturnSingleItem(item.id)}
+                          className="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil einzeln zurücknehmen">
                           <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
                           <span>Zurück</span>
                         </button>
