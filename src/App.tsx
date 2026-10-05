@@ -2745,17 +2745,6 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                     <span>PDF laden</span>
                   </button>
                 )}
-                {rental.contract.status !== 'signed' && onOpenSigningLink && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onOpenSigningLink(rental.id); }}
-                    className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="Link zum Unterschreiben für Entleiher erzeugen und teilen"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    <span>Link teilen</span>
-                  </button>
-                )}
                 {rental.contract.status === 'signed' && (
                   <button
                     type="button"
