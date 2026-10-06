@@ -718,6 +718,31 @@ function calculateDueDate(startDateStr: string): string {
     }
   });
 
+  // Zahlungsstatus per POST: robuste Alternative für mobile/Preview-Clients.
+  app.post("/api/rentals/:id/payment-status", authHeader, async (req, res) => {
+    try {
+      const { paid } = req.body;
+      if (typeof paid !== "boolean") {
+        return res.status(400).json({ success: false, message: "Ungültiger Zahlungsstatus." });
+      }
+
+      const supabase = getSupabase();
+      const { id } = req.params;
+      const { data, error } = await supabase
+        .from('hockey_rentals')
+        .update({ paid })
+        .eq('id', id)
+        .select('id, paid')
+        .single();
+
+      if (error) throw error;
+      res.json({ success: true, paid: data.paid });
+    } catch (err: any) {
+      console.error(`[Rental Payment Status Error]: ${err.message}`);
+      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Zahlungsstatus." });
+    }
+  });
+
   app.patch("/api/rentals/:id/paid", authHeader, async (req, res) => {
     try {
       const { paid } = req.body;
