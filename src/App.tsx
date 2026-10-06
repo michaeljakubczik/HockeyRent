@@ -2294,11 +2294,7 @@ export default function App() {
               const rId = editingBundleRental.id;
               const isSigned = editingBundleRental.contract?.status === 'signed';
               setEditingBundleRental(null);
-              if (isSigned) {
-                setContractModal({ isOpen: true, rentalId: rId, mode: 'preview' });
-              } else {
-                setShareSigningRentalId(rId);
-              }
+              setContractModal({ isOpen: true, rentalId: rId, mode: isSigned ? 'preview' : 'form' });
             }}
           />
         )}
@@ -2315,7 +2311,7 @@ export default function App() {
               className="bg-[#252936] w-full max-w-md rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80"
             >
               <h3 className="text-xl font-extrabold text-white">Vertrag erstellen</h3>
-              <p className="text-sm text-slate-400 mt-1.5">Wie möchtest du mit dem Vertrag fortfahren?</p>
+              <p className="text-sm text-slate-400 mt-1.5">Beide Wege führen zum vollständigen Vertrag mit digitaler Unterschrift.</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
                 <button type="button"
                   onClick={() => {
@@ -2325,7 +2321,7 @@ export default function App() {
                   }}
                   className="bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
                   <Share2 className="w-4 h-4" />
-                  Link zum Vertrag
+                  Per Link ausfüllen
                 </button>
                 <button type="button"
                   onClick={() => {
@@ -2335,7 +2331,7 @@ export default function App() {
                   }}
                   className="bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
                   <Edit className="w-4 h-4" />
-                  Vertrag bearbeiten
+                  Auf diesem Gerät
                 </button>
               </div>
               <button type="button" onClick={() => setContractChoiceRentalId(null)}
@@ -4406,8 +4402,8 @@ const ContractModal: React.FC<ContractModalProps> = ({
               <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-start gap-3">
                 <ShieldCheck className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
                 <div className="text-xs text-slate-300 leading-relaxed">
-                  <strong className="text-blue-300 block mb-0.5">Digitaler Ausleihvertrag (Phase 1)</strong>
-                  Erfasse die individuellen Entleiherdaten. Die tatsächlich ausgeliehenen Equipmentteile und Fristen werden automatisch aus der Ausleihe übernommen. Unterschrift, PDF und Mail folgen in Phase 2.
+                  <strong className="text-blue-300 block mb-0.5">Digitaler Ausleihvertrag</strong>
+                  Erfasse die Entleiherdaten. Danach kann der Vertrag direkt auf diesem Gerät geprüft und unterschrieben werden. Alternativ kannst du einen sicheren Link senden, über den der Entleiher den vollständigen Vertrag selbst ausfüllt und unterschreibt.
                 </div>
               </div>
 
@@ -4688,7 +4684,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
                     className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                   >
                     <Eye className="w-4 h-4" />
-                    <span>{saving ? 'Speichert...' : 'Speichern & Vorschau'}</span>
+                    <span>{saving ? 'Speichert...' : 'Weiter zur Unterschrift'}</span>
                   </button>
                 </div>
               </div>
@@ -5033,6 +5029,17 @@ const ContractModal: React.FC<ContractModalProps> = ({
                   </>
                 ) : (
                   <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleStartSignFlow}
+                      disabled={saving || isSigningSubmitting}
+                      className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                      title="Vertrag direkt auf diesem Gerät unterschreiben"
+                    >
+                      <PenTool className="w-4 h-4" />
+                      <span>Auf diesem Gerät unterschreiben</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => setShowShareModal(true)}
