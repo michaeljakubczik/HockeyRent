@@ -45,6 +45,17 @@ import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } 
 
 const API_BASE = '/api';
 
+function actionHaptic(kind: 'tap' | 'success' | 'error' = 'tap') {
+  if (typeof navigator === 'undefined' || !('vibrate' in navigator)) return;
+  try {
+    if (kind === 'success') navigator.vibrate([18, 35, 18]);
+    else if (kind === 'error') navigator.vibrate([45, 35, 45]);
+    else navigator.vibrate(20);
+  } catch {
+    // Haptik ist progressive enhancement; insbesondere iOS Safari kann Vibrate ignorieren.
+  }
+}
+
 // Saubere Berechnung: 6 Kalendermonate ab Startdatum (inkl. Monatsende-Sonderfall)
 export function calculateDueDate(startDateStr: string): string {
   if (!startDateStr) return '';
@@ -244,6 +255,7 @@ export default function App() {
 
   // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
+  const [equipmentGroupFilter, setEquipmentGroupFilter] = useState<'player' | 'goalie'>('player');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sizeFilter, setSizeFilter] = useState<string>('all');
 
@@ -253,19 +265,25 @@ export default function App() {
   // Accordion state for rental cards: map rental id -> isExpanded (boolean, default false)
   const [expandedRentals, setExpandedRentals] = useState<Record<number, boolean>>({});
 
-  const totalCount = items.length;
-  const availableCount = items.filter(i => i.status === 'verfügbar').length;
-  const rentedCount = items.filter(i => i.status === 'verliehen').length;
+  const itemBelongsToEquipmentGroup = (item: EquipmentItem, group: 'player' | 'goalie') => {
+    const categoryConfig = CATEGORIES.find(c => c.value === item.category || c.label === item.category_label);
+    const isGoalie = categoryConfig?.type === 'Goalie' || String(item.category_label || item.category).toLowerCase().startsWith('goalie');
+    return group === 'goalie' ? isGoalie : !isGoalie;
+  };
 
-  // Dynamically compute available categories from existing items in inventory
+  const equipmentGroupItems = items.filter(i => !i.is_deleted && itemBelongsToEquipmentGroup(i, equipmentGroupFilter));
+  const totalCount = equipmentGroupItems.length;
+  const availableCount = equipmentGroupItems.filter(i => i.status === 'verfügbar').length;
+  const rentedCount = equipmentGroupItems.filter(i => i.status === 'verliehen').length;
+
+  // Kategorien und Größen passend zur aktuell gewählten Liste Spieler / Goalie.
   const availableCategories = Array.from(
-    new Set<string>(items.map(i => i.category_label || i.category).filter((c): c is string => Boolean(c)))
+    new Set<string>(equipmentGroupItems.map(i => i.category_label || i.category).filter((c): c is string => Boolean(c)))
   ).sort((a, b) => a.localeCompare(b, 'de'));
 
-  // Dynamically compute available sizes from existing items in inventory with standard hierarchy
   const standardSizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
   const availableSizes = Array.from(
-    new Set<string>(items.map(i => i.size).filter((s): s is string => Boolean(s)))
+    new Set<string>(equipmentGroupItems.map(i => i.size).filter((sz): sz is string => Boolean(sz)))
   ).sort((a, b) => {
     const aUpper = a.trim().toUpperCase();
     const bUpper = b.trim().toUpperCase();
@@ -288,6 +306,7 @@ export default function App() {
   // Filter Pipeline: items -> Status -> Category -> Size
   const displayedItems = items.filter(item => {
     if (item.is_deleted) return false;
+    if (!itemBelongsToEquipmentGroup(item, equipmentGroupFilter)) return false;
 
     // Im Spezialmodus (Austausch oder Teil hinzufügen) ausschließlich verfügbare Teile
     if (bundleExchange || bundleAdd) {
@@ -572,6 +591,8 @@ export default function App() {
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setBag([]);
+        // Neue Tasche startet wieder mit vollständig geöffnetem Bestand.
+        setCollapsedCategories({});
         fetchItems(password);
         setCurrentView('rentals');
         setRentalsSubTab('active');
@@ -616,6 +637,8 @@ export default function App() {
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setRentingItem(null);
+        // Nach dem Verleih ist der Bestand für die nächste Auswahl wieder komplett geöffnet.
+        setCollapsedCategories({});
         fetchItems(password);
         setCurrentView('rentals');
         setRentalsSubTab('active');
@@ -635,8 +658,10 @@ export default function App() {
 
   // Alles zurückgeben (kompletter Verleihvorgang beenden)
   const handleReturnRental = async (rentalId: number) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
+    setSuccess('Rückgabe wird gespeichert …');
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/return`, {
         method: 'POST',
@@ -649,6 +674,7 @@ export default function App() {
         await fetchItems(password);
         setCurrentView('history');
         setRentalsSubTab('completed');
+        actionHaptic('success');
         setSuccess('Ausleihe vollständig zurückgegeben.');
         setTimeout(() => setSuccess(null), 3000);
       } else {
@@ -664,8 +690,10 @@ export default function App() {
 
   // Einzelnes Teil aus laufendem Bundle zurückgeben
   const handleReturnSingleItemFromBundle = async (rentalId: number, itemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
+    setSuccess('Rückgabe wird gespeichert …');
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/items/${itemId}/return`, {
         method: 'POST',
@@ -676,9 +704,13 @@ export default function App() {
         body: JSON.stringify({ note })
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
+        actionHaptic('success');
+        setSuccess('Teil erfolgreich zurückgegeben.');
+        setTimeout(() => setSuccess(null), 2200);
       } else {
         const data: ApiResponse = await res.json();
+        actionHaptic('error');
         setError(data.message || 'Fehler bei der Rückgabe des Einzelteils');
       }
     } catch (err) {
@@ -690,6 +722,7 @@ export default function App() {
 
   // Neues Teil zu laufendem Bundle hinzufügen
   const handleAddItemToBundle = async (rentalId: number, itemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
     try {
@@ -716,6 +749,7 @@ export default function App() {
 
   // Teil gegen ein anderes austauschen
   const handleExchangeItemInBundle = async (rentalId: number, returnItemId: number, newItemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
     try {
@@ -984,6 +1018,7 @@ export default function App() {
 
   const executeDelete = async () => {
     if (!confirmDelete) return;
+    actionHaptic('tap');
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
     
@@ -996,9 +1031,13 @@ export default function App() {
         headers: { 'x-admin-password': password }
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
+        actionHaptic('success');
+        setSuccess('Änderung gespeichert.');
+        setTimeout(() => setSuccess(null), 2000);
       } else {
         const data: ApiResponse = await res.json();
+        actionHaptic('error');
         setError(data.message || 'Fehler beim Löschen');
       }
     } catch (err) {
@@ -1059,12 +1098,10 @@ export default function App() {
     setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid } : r));
     setPaymentPendingRentalIds(prev => new Set(prev).add(rentalId));
     setError(null);
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      navigator.vibrate(25);
-    }
+    actionHaptic('tap');
 
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}/paid`, {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1080,13 +1117,12 @@ export default function App() {
         return;
       }
 
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        navigator.vibrate([20, 40, 20]);
-      }
+      actionHaptic('success');
       setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
       window.setTimeout(() => setSuccess(null), 1800);
     } catch (err) {
       setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid: previousPaid } : r));
+      actionHaptic('error');
       setError(paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen');
     } finally {
       setPaymentPendingRentalIds(prev => {
@@ -1426,6 +1462,24 @@ export default function App() {
                   </button>
                 </div>
               )}
+
+              {/* Spieler / Goalie als zwei getrennte Bestandslisten */}
+              <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-[#181B24] border border-slate-700/70">
+                <button
+                  type="button"
+                  onClick={() => { setEquipmentGroupFilter('player'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'player' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
+                >
+                  Spieler
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEquipmentGroupFilter('goalie'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'goalie' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
+                >
+                  Goalie
+                </button>
+              </div>
 
               {/* Kompakte Bestandszahlen & Statusfilter (nur im Normalmodus) */}
               {!(bundleExchange || bundleAdd) && (
@@ -3719,9 +3773,11 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
 
   const handleCopy = async () => {
     if (!shareUrl) return;
+    actionHaptic('tap');
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
+      actionHaptic('success');
       setNotice('Link erfolgreich in die Zwischenablage kopiert!');
       setTimeout(() => {
         setCopied(false);
@@ -3752,6 +3808,7 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
   };
 
   const handleGenerateNew = async () => {
+    actionHaptic('tap');
     setShowConfirmNew(false);
     setGeneratingNew(true);
     setError(null);
@@ -3767,6 +3824,7 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
       if (res.ok && data.success) {
         setToken(data.token);
         setExpiresAt(data.expires_at);
+        actionHaptic('success');
         setNotice('Neuer Link erzeugt! Der vorherige Link ist nun ungültig.');
         setTimeout(() => setNotice(null), 4000);
       } else {
@@ -4100,6 +4158,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       return false;
     }
 
+    actionHaptic('tap');
     setSaving(true);
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract`, {
@@ -4128,6 +4187,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         setExistingContract(data.contract);
+        actionHaptic('success');
         setSuccess('Vertragsdaten erfolgreich gespeichert!');
         if (onContractSaved) {
           onContractSaved(data.contract);
@@ -4159,6 +4219,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
   // Verbindliche Unterschrift an Backend übertragen (Phase 2)
   const handleSignComplete = async (signatureData: string, signerNameInput: string) => {
+    actionHaptic('tap');
     setIsSigningSubmitting(true);
     setError(null);
     try {
@@ -4178,6 +4239,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       if (res.ok && data.success) {
         setExistingContract(data.contract);
         setShowSignatureModal(false);
+        actionHaptic('success');
         setSuccess('Vertrag erfolgreich verbindlich unterschrieben und als PDF archiviert!');
         if (onContractSaved) {
           onContractSaved(data.contract);
