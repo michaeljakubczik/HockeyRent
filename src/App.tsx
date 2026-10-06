@@ -1325,13 +1325,14 @@ export default function App() {
             </div>
           </div>
           
-          <SoundToggle {...sound} />
+          <div className="flex items-center gap-1">
           <nav className="hidden md:flex items-center gap-1.5">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
             <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
             {/* Sichtbare Benennung: "Ausleihen" mit Zähler der aktiven Vorgänge */}
             <TabButton active={currentView === 'rentals' || currentView === 'history'} onClick={() => setCurrentView('rentals')} icon={<History className="w-4 h-4" />} label="Ausleihen" count={activeRentals.length} />
             <TabButton active={currentView === 'add'} onClick={() => setCurrentView('add')} icon={<Plus className="w-4 h-4" />} label="Neu" />
+            <SoundToggle {...sound} />
             <button 
               onClick={handleLogout}
               className="ml-2 p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-xl transition-all cursor-pointer"
@@ -1341,6 +1342,8 @@ export default function App() {
             </button>
           </nav>
 
+          <div className="md:hidden flex items-center gap-1">
+          <SoundToggle {...sound} />
           <button 
             onClick={handleLogout}
             className="md:hidden p-2 text-slate-400 hover:text-red-400 transition-all cursor-pointer"
@@ -1348,6 +1351,8 @@ export default function App() {
           >
             <LogOut className="w-5 h-5" />
           </button>
+          </div>
+          </div>
         </div>
       </header>
 

@@ -183,8 +183,10 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
     color: rgb(0.4, 0.45, 0.5),
   });
 
+  // Signed PDFs need no extra status label; retain the draft warning.
+  if (!contract.signed_at) {
   // Status-Badge oben rechts
-  const badgeText = contract.signed_at ? 'VERBINDLICH UNTERSCHRIEBEN' : 'VERTRAGSENTWURF';
+  const badgeText = 'VERTRAGSENTWURF';
   const badgeWidth = boldFont.widthOfTextAtSize(badgeText, 7.5);
   currentPage.drawRectangle({
     x: PAGE_WIDTH - MARGIN_RIGHT - badgeWidth - 14,
@@ -202,6 +204,8 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
     font: boldFont,
     color: contract.signed_at ? rgb(0.12, 0.5, 0.2) : rgb(0.2, 0.35, 0.7),
   });
+
+  }
 
   y -= 12;
   currentPage.drawLine({

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Volume2, VolumeX } from 'lucide-react';
 
 const preferenceKey = 'hockey_button_sound_v1';
@@ -11,15 +11,13 @@ export function useButtonSound() {
   const context = useRef<AudioContext | null>(null);
   const lastClick = useRef(0);
 
-  useEffect(() => {
-    try { localStorage.setItem(preferenceKey, enabled ? 'on' : 'off'); } catch { /* Optional preference storage. */ }
-    if (!enabled) return;
-    const onClick = (event: MouseEvent) => {
-      const button = event.target instanceof Element ? event.target.closest('button') : null;
-      if (!event.isTrusted || !button || button.disabled || button.getAttribute('aria-disabled') === 'true' || button.hasAttribute('data-sound-toggle')) return;
-      if (performance.now() - lastClick.current < 100) return;
-      lastClick.current = performance.now();
+  const playClick = useCallback(() => {
       try {
+        // Safari otherwise routes Web Audio through the iPhone silent switch.
+        try {
+          const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+          if (session) session.type = 'playback';
+        } catch { /* Older browsers use the default audio route. */ }
         // Create/resume only during a user gesture (including iOS Safari).
         const Audio = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
         if (!Audio) return;
@@ -31,30 +29,50 @@ export function useButtonSound() {
           const now = audio.currentTime;
           oscillator.type = 'sine';
           oscillator.frequency.setValueAtTime(720, now);
-          oscillator.frequency.exponentialRampToValueAtTime(560, now + 0.055);
+          oscillator.frequency.exponentialRampToValueAtTime(560, now + 0.075);
           gain.gain.setValueAtTime(0, now);
-          gain.gain.linearRampToValueAtTime(0.025, now + 0.005);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
+          gain.gain.linearRampToValueAtTime(0.06, now + 0.005);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
           oscillator.connect(gain);
           gain.connect(audio.destination);
           oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
           oscillator.start(now);
-          oscillator.stop(now + 0.065);
+          oscillator.stop(now + 0.085);
         };
         if (audio.state === 'running') play();
         else void audio.resume().then(play).catch(() => {});
       } catch { /* Audio feedback must never interrupt an action. */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(preferenceKey, enabled ? 'on' : 'off'); } catch { /* Optional preference storage. */ }
+    if (!enabled) return;
+    const onClick = (event: MouseEvent) => {
+      const button = event.target instanceof Element ? event.target.closest('button') : null;
+      if (!event.isTrusted || !button || button.disabled || button.getAttribute('aria-disabled') === 'true' || button.hasAttribute('data-sound-toggle')) return;
+      if (performance.now() - lastClick.current < 100) return;
+      lastClick.current = performance.now();
+      playClick();
     };
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
-  }, [enabled]);
+  }, [enabled, playClick]);
 
   useEffect(() => () => {
     if (context.current) void context.current.close().catch(() => {});
     context.current = null;
   }, []);
 
-  return { enabled, toggle: () => setEnabled(value => !value) };
+  return { enabled, toggle: () => {
+    if (!enabled) playClick(); // An immediate sample also unlocks Safari audio.
+    else {
+      try {
+        const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+        if (session) session.type = 'auto';
+      } catch { /* Optional browser API. */ }
+    }
+    setEnabled(value => !value);
+  } };
 }
 
 export function SoundToggle({ enabled, toggle }: { enabled: boolean; toggle: () => void }) {
