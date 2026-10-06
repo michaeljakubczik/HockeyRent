@@ -662,13 +662,9 @@ export default function App() {
     if (!previousRental) return;
 
     actionHaptic('tap');
+    setLoading(true);
     setError(null);
-
-    // Sofort aus "Aktuell" entfernen. Die Datenbank arbeitet danach im Hintergrund.
-    const optimisticReturnedAt = new Date().toISOString().split('T')[0];
-    setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, returned_at: optimisticReturnedAt } : r));
-    setRentalsSubTab('completed');
-    setSuccess('Rückgabe wird gespeichert …');
+    setSuccess('Rückgabe wird in der Datenbank gespeichert …');
 
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/return`, {
@@ -676,31 +672,29 @@ export default function App() {
         headers: { 'x-admin-password': password }
       });
 
-      if (!res.ok) {
-        const data: ApiResponse = await res.json().catch(() => ({ success: false }));
-        setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
-        setRentalsSubTab('active');
+      const data: any = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
         actionHaptic('error');
         setSuccess(null);
-        setError(data.message || 'Fehler bei der Rückgabe');
+        setError(data?.message || 'Fehler bei der Rückgabe');
         return;
       }
 
+      // Erst NACH bestätigter DB-Rückgabe neu laden und in "Abgeschlossen" wechseln.
+      await fetchItems(password);
       if (editingBundleRental?.id === rentalId) {
         setEditingBundleRental(null);
       }
+      setRentalsSubTab('completed');
       actionHaptic('success');
-      setSuccess('Ausleihe vollständig zurückgegeben.');
-      window.setTimeout(() => setSuccess(null), 2500);
-
-      // Serverstand nachziehen, ohne die sichtbare Rückmeldung darauf warten zu lassen.
-      void fetchItems(password);
+      setSuccess(`${data.returned_count ?? 'Alle'} Teile erfolgreich zurückgegeben.`);
+      window.setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
-      setRentalsSubTab('active');
       actionHaptic('error');
       setSuccess(null);
       setError('Fehler bei der Rückgabe');
+    } finally {
+      setLoading(false);
     }
   };
 
