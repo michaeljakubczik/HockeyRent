@@ -36,7 +36,8 @@ import {
   Clock,
   ShieldAlert,
   ExternalLink,
-  Check
+  Check,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
@@ -217,6 +218,12 @@ export default function App() {
 
   // Share Signing Link Modal
   const [shareSigningRentalId, setShareSigningRentalId] = useState<number | null>(null);
+
+  // Nach einer neuen Ausleihe: Admin entscheidet zwischen eigenem Bearbeiten und externem Link.
+  const [contractChoiceRentalId, setContractChoiceRentalId] = useState<number | null>(null);
+
+  // Lokaler Pending-Status für schnelle, optimistische Zahlungsumschaltung.
+  const [paymentPendingRentalIds, setPaymentPendingRentalIds] = useState<Set<number>>(new Set());
 
   // Spezialmodi für Bundle-Bearbeitung über den normalen zentralen Bestand
   const [bundleExchange, setBundleExchange] = useState<{
@@ -569,7 +576,7 @@ export default function App() {
         setCurrentView('rentals');
         setRentalsSubTab('active');
         if (data.rentalId) {
-          setShareSigningRentalId(data.rentalId);
+          setContractChoiceRentalId(data.rentalId);
         }
       } else {
         const data: ApiResponse = await res.json();
@@ -605,11 +612,16 @@ export default function App() {
         })
       });
       if (res.ok) {
+        const data = await res.json();
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setRentingItem(null);
         fetchItems(password);
-        setCurrentView('available');
+        setCurrentView('rentals');
+        setRentalsSubTab('active');
+        if (data.rentalId) {
+          setContractChoiceRentalId(data.rentalId);
+        }
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Verleihen');
@@ -1038,27 +1050,50 @@ export default function App() {
   };
 
   const handleMarkAsPaid = async (rentalId: number, paid: boolean = true) => {
-    setLoading(true);
+    if (paymentPendingRentalIds.has(rentalId)) return;
+
+    const previousRental = history.find(r => r.id === rentalId);
+    const previousPaid = previousRental?.paid ?? !paid;
+
+    // Sofortige sichtbare Rückmeldung – Server-Speicherung läuft anschließend im Hintergrund.
+    setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid } : r));
+    setPaymentPendingRentalIds(prev => new Set(prev).add(rentalId));
     setError(null);
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(25);
+    }
+
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/paid`, {
         method: 'PATCH',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': password 
+          'x-admin-password': password
         },
         body: JSON.stringify({ paid })
       });
-      if (res.ok) {
-        fetchItems(password);
-      } else {
-        const data: ApiResponse = await res.json();
+
+      if (!res.ok) {
+        const data: ApiResponse = await res.json().catch(() => ({ success: false }));
+        setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid: previousPaid } : r));
         setError(data.message || (paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen'));
+        return;
       }
+
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate([20, 40, 20]);
+      }
+      setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
+      window.setTimeout(() => setSuccess(null), 1800);
     } catch (err) {
+      setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid: previousPaid } : r));
       setError(paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen');
     } finally {
-      setLoading(false);
+      setPaymentPendingRentalIds(prev => {
+        const next = new Set(prev);
+        next.delete(rentalId);
+        return next;
+      });
     }
   };
 
@@ -1875,13 +1910,14 @@ export default function App() {
                         isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : true}
                         onToggle={() => toggleRentalAccordion(rental.id, true)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
+                        isPaymentPending={paymentPendingRentalIds.has(rental.id)}
                         onReturnAll={() => setConfirmReturnRental({ id: rental.id, renterName: rental.renter_name })}
                         onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(rental.id, itemId, note)}
                         onExchangeItem={(item) => startExchange(rental, item)}
                         onAddItem={() => startAddItem(rental)}
                         onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
-                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract ? 'preview' : 'form' })}
+                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract?.status === 'signed' ? 'preview' : 'form' })}
                         onOpenSigningLink={(rId) => setShareSigningRentalId(rId)}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
@@ -1903,6 +1939,7 @@ export default function App() {
                         isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : false}
                         onToggle={() => toggleRentalAccordion(rental.id, false)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
+                        isPaymentPending={paymentPendingRentalIds.has(rental.id)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: 'preview' })}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
@@ -2200,6 +2237,49 @@ export default function App() {
               }
             }}
           />
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: VERTRAGSWEG NACH NEUER AUSLEIHE WÄHLEN */}
+      <AnimatePresence>
+        {contractChoiceRentalId !== null && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="bg-[#252936] w-full max-w-md rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80"
+            >
+              <h3 className="text-xl font-extrabold text-white">Vertrag erstellen</h3>
+              <p className="text-sm text-slate-400 mt-1.5">Wie möchtest du mit dem Vertrag fortfahren?</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
+                <button type="button"
+                  onClick={() => {
+                    const rentalId = contractChoiceRentalId;
+                    setContractChoiceRentalId(null);
+                    setShareSigningRentalId(rentalId);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
+                  <Share2 className="w-4 h-4" />
+                  Link zum Vertrag
+                </button>
+                <button type="button"
+                  onClick={() => {
+                    const rentalId = contractChoiceRentalId;
+                    setContractChoiceRentalId(null);
+                    setContractModal({ isOpen: true, rentalId, mode: 'form' });
+                  }}
+                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
+                  <Edit className="w-4 h-4" />
+                  Vertrag bearbeiten
+                </button>
+              </div>
+              <button type="button" onClick={() => setContractChoiceRentalId(null)}
+                className="w-full mt-3 py-2.5 text-sm text-slate-400 hover:text-white cursor-pointer">
+                Später
+              </button>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -2626,6 +2706,7 @@ interface ActiveRentalCardProps {
   isExpanded: boolean;
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
+  isPaymentPending?: boolean;
   onReturnAll: () => void;
   onReturnSingleItem: (itemId: number, note?: string) => void;
   onExchangeItem: (item: EquipmentItem) => void;
@@ -2642,6 +2723,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   isExpanded,
   onToggle,
   onMarkAsPaid,
+  isPaymentPending = false,
   onReturnAll,
   onReturnSingleItem,
   onExchangeItem,
@@ -2679,31 +2761,30 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
         <div className="min-w-[116px] pt-0.5 flex flex-col items-stretch gap-2.5">
           <button
             type="button"
+            disabled={isPaymentPending}
             onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all cursor-pointer ${
+            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all disabled:opacity-70 disabled:cursor-wait ${
               rental.paid
                 ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
                 : 'text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/30'
             }`}
             title={rental.paid ? 'Zahlungsstatus wieder auf offen setzen' : 'Zahlung als eingegangen markieren'}
           >
-            {rental.paid ? '✓ Bezahlt' : 'Offen'}
+            <span className="flex items-center justify-center gap-1.5">
+              {isPaymentPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {rental.paid ? '✓ Bezahlt' : 'Offen'}
+            </span>
           </button>
 
-          {rental.contract?.status === 'signed' ? (
+          {rental.contract ? (
             <span className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
-              Vertrag vorhanden
-            </span>
-          ) : rental.contract ? (
-            <span className="text-[11px] font-semibold text-indigo-300 flex items-center gap-1.5">
-              <FileText className="w-3.5 h-3.5 flex-shrink-0" />
-              Entwurf vorhanden
+              <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+              Vertrag
             </span>
           ) : (
             <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
               <XCircle className="w-3.5 h-3.5 flex-shrink-0" />
-              Vertrag fehlt
+              Vertrag
             </span>
           )}
           <span className="text-xs font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
@@ -2819,14 +2900,24 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                 <span>Vertrag anzeigen</span>
               </button>
             ) : onOpenSigningLink ? (
-              <button
-                type="button"
-                onClick={() => onOpenSigningLink(rental.id)}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
-              >
-                <Share2 className="w-4 h-4" />
-                <span>Unterschriften-Link erstellen</span>
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onOpenSigningLink(rental.id)}
+                  className="min-w-0 bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-3 py-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                >
+                  <Share2 className="w-4 h-4 flex-shrink-0" />
+                  <span>Link zum Vertrag</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenContract}
+                  className="min-w-0 bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-3 py-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <Edit className="w-4 h-4 flex-shrink-0" />
+                  <span>Vertrag bearbeiten</span>
+                </button>
+              </div>
             ) : null}
 
             <div className="grid grid-cols-2 gap-2">
@@ -2863,6 +2954,7 @@ interface CompletedRentalCardProps {
   isExpanded: boolean;
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
+  isPaymentPending?: boolean;
   onDelete: () => void;
   onOpenContract?: () => void;
   onDownloadPdf?: () => void;
@@ -2873,247 +2965,101 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   isExpanded,
   onToggle,
   onMarkAsPaid,
+  isPaymentPending = false,
   onDelete,
   onOpenContract,
   onDownloadPdf
 }) => {
-  // Für abgeschlossene Ausleihen: Immer alle historischen Teile anzeigen
   const allItems = rental.all_items || rental.items || rental.all_rental_items?.map(ri => ri.item).filter((i): i is EquipmentItem => Boolean(i)) || [];
   const itemCount = allItems.length;
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
-      <div 
-        onClick={onToggle}
-        className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
-      >
-        <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white leading-snug whitespace-normal break-words">
-            {rental.renter_name}
-          </h4>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-            <span>{formatDateDe(rental.rented_at)} bis {formatDateDe(rental.returned_at)}</span>
-            <span>•</span>
-            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-            <span>•</span>
-            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
+      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 sm:gap-4 items-start">
+        <div className="min-w-0">
+          <h4 className="text-lg sm:text-xl font-bold text-white leading-snug whitespace-normal break-words">{rental.renter_name}</h4>
+          <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs sm:text-sm">
+            <span className="text-slate-400">Verliehen:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.rented_at)}</strong>
+            <span className="text-slate-400">Zurück:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.returned_at)}</strong>
+            <span className="text-slate-400">Gebühr:</span>
+            <strong className="text-slate-100">{rental.fee_total.toFixed(2)} €</strong>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract?.status === 'signed' ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <ShieldCheck className="w-3 h-3 text-emerald-400" />
-              <span>Vertrag signiert</span>
+        <div className="min-w-[104px] flex flex-col items-stretch gap-2.5">
+          <button
+            type="button"
+            disabled={isPaymentPending}
+            onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all disabled:opacity-70 disabled:cursor-wait ${
+              rental.paid
+                ? 'text-emerald-300 bg-emerald-500/15 border-emerald-500/35'
+                : 'text-red-300 bg-red-500/10 border-red-500/30'
+            }`}
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              {isPaymentPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {rental.paid ? '✓ Bezahlt' : 'Offen'}
             </span>
-          ) : rental.contract ? (
-            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <FileText className="w-3 h-3 text-indigo-400" />
-              <span>Vertrag</span>
-            </span>
-          ) : null}
+          </button>
+          <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${rental.contract ? 'text-emerald-300' : 'text-slate-400'}`}>
+            {rental.contract ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+            Vertrag
+          </span>
+          <span className="text-xs font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
+        </div>
 
-          {rental.paid ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Bezahlt
-            </span>
-          ) : (
-            <span className="text-[10px] sm:text-xs font-bold text-red-300 bg-red-500/15 border border-red-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Offen
-            </span>
-          )}
-
-          <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </div>
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" onClick={onToggle}
+            className="p-2 rounded-xl bg-[#181B24] text-slate-300 hover:text-white border border-slate-700 cursor-pointer">
+            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 cursor-pointer" title="Ausleihe löschen">
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* Aufgeklappter Detailbereich für abgeschlossene Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
-            <div className="flex flex-wrap items-center gap-3 text-slate-300">
-              <span className="flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                <span>Verliehen: <strong>{formatDateDe(rental.rented_at)}</strong></span>
-              </span>
-              {rental.due_date && (
-                <span className="flex items-center gap-1.5 text-slate-400">
-                  <span>Geplant bis: <strong className="text-slate-300">{formatDateDe(rental.due_date)}</strong></span>
-                </span>
-              )}
-              <span className="flex items-center gap-1.5 text-emerald-400">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Zurück: <strong>{formatDateDe(rental.returned_at)}</strong></span>
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {onOpenContract && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-indigo-300 bg-indigo-500/20 hover:bg-indigo-500/30 border-indigo-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Vertrag anzeigen"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag nachtragen'}</span>
-                </button>
-              )}
-
-              {rental.contract?.status === 'signed' && onDownloadPdf && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Signiertes Vertrags-PDF herunterladen"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>PDF laden</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                  rental.paid 
-                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
-                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
-                }`}
-              >
-                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                className="p-1 text-slate-500 hover:text-red-400 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                title="Eintrag löschen"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Vertragsstatus bei abgeschlossener Ausleihe */}
-          {rental.contract ? (
-            <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
-              rental.contract.status === 'signed'
-                ? 'bg-emerald-950/25 border-emerald-500/35 text-emerald-200'
-                : 'bg-indigo-950/25 border-indigo-500/35 text-indigo-200'
-            }`}>
-              <div className="flex items-center gap-2.5 min-w-0">
-                {rental.contract.status === 'signed' ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                ) : (
-                  <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                )}
+          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Ausgeliehene Ausrüstung ({itemCount})</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {allItems.map((item, index) => (
+              <div key={item.id || index} className="bg-[#181B24] h-[88px] rounded-xl border border-slate-700/60 p-2 flex items-center gap-3 overflow-hidden">
+                <div className="w-[68px] h-[68px] rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
+                  {item.image ? <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-slate-600"><Package className="w-5 h-5" /></div>}
+                </div>
                 <div className="min-w-0">
-                  {rental.contract.status === 'signed' ? (
-                    <p className="truncate">
-                      <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
-                      {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
-                    </p>
-                  ) : (
-                    <p className="truncate">
-                      <strong>Vertragsentwurf erfasst</strong>
-                    </p>
-                  )}
+                  <p className="text-sm font-bold text-white leading-tight whitespace-normal break-words">{item.category_label}</p>
+                  <p className="mt-1 text-[11px] text-slate-400 leading-tight">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
                 </div>
               </div>
+            ))}
+          </div>
 
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {rental.contract.status === 'signed' && onDownloadPdf && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                    title="Signiertes PDF herunterladen"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>PDF laden</span>
-                  </button>
-                )}
-                {onOpenContract && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                    className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Vertrag ansehen</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : onOpenContract ? (
-            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs text-slate-400">
-              <span>Kein digitaler Vertrag für diese frühere Ausleihe hinterlegt.</span>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 border border-indigo-500/40 transition-all flex items-center gap-1 cursor-pointer"
-              >
-                <FileText className="w-3 h-3" />
-                <span>Vertrag nachtragen</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-3 border-t border-slate-800">
+            {onOpenContract && (
+              <button type="button" onClick={onOpenContract}
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer">
+                <FileText className="w-4 h-4" />
+                <span>{rental.contract ? 'Vertrag ansehen' : 'Vertrag nachtragen'}</span>
               </button>
-            </div>
-          ) : null}
-
-          {/* Verliehene Ausrüstungsteile (dauerhaft sichtbar in abgeschlossenen Vorgängen) */}
-          <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-              Ausgeliehene Ausrüstung ({itemCount}):
-            </p>
-            {allItems.length === 0 ? (
-              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine Teile hinterlegt.</p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                {allItems.map((item: any, idx: number) => (
-                  <div key={item.id || idx} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
-                    <div className="w-9 h-9 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                      {item.image ? (
-                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-slate-600">
-                          <Package className="w-4 h-4" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-white truncate">{item.category_label || item.category}</p>
-                      <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            )}
+            {rental.contract?.status === 'signed' && onDownloadPdf && (
+              <button type="button" onClick={onDownloadPdf}
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer">
+                <Download className="w-4 h-4" />
+                <span>PDF herunterladen</span>
+              </button>
             )}
           </div>
 
-          {/* Dezente historische Wechselangaben als Randinformation */}
-          {rental.all_rental_items && rental.all_rental_items.some(ri => !!ri.returned_at) && (
-            <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-[11px] text-slate-400">
-              <span className="font-bold uppercase tracking-wider block mb-1 text-slate-500">Austausch / Verlauf:</span>
-              <ul className="space-y-0.5">
-                {rental.all_rental_items.filter(ri => !!ri.returned_at).map((ri, i) => (
-                  <li key={i}>
-                    • {ri.returned_at}: {ri.item?.category_label || 'Teil'} ({ri.item?.item_code || ''}) vorzeitig zurückgegeben {ri.exchange_note ? `(${ri.exchange_note})` : ''}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {rental.note && (
             <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz:</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz</span>
               <p className="text-xs text-slate-300 italic">"{rental.note}"</p>
             </div>
           )}
