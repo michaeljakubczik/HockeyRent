@@ -2619,7 +2619,8 @@ const CategoryGalleryRow: React.FC<CategoryGalleryRowProps> = ({
   );
 };
 
-// 1. ACTIVE RENTAL CARD (Bereich "Ausleihen -> Aktuell")
+// 1. ACTIVE RENTAL CARD
+// Mobile layout: compact header and equal-height equipment cards. (Bereich "Ausleihen -> Aktuell")
 interface ActiveRentalCardProps {
   rental: Rental;
   isExpanded: boolean;
