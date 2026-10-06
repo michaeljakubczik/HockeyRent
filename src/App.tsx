@@ -36,13 +36,25 @@ import {
   Clock,
   ShieldAlert,
   ExternalLink,
-  Check
+  Check,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
 
 const API_BASE = '/api';
+
+function actionHaptic(kind: 'tap' | 'success' | 'error' = 'tap') {
+  if (typeof navigator === 'undefined' || !('vibrate' in navigator)) return;
+  try {
+    if (kind === 'success') navigator.vibrate([18, 35, 18]);
+    else if (kind === 'error') navigator.vibrate([45, 35, 45]);
+    else navigator.vibrate(20);
+  } catch {
+    // Haptik ist progressive enhancement; insbesondere iOS Safari kann Vibrate ignorieren.
+  }
+}
 
 // Saubere Berechnung: 6 Kalendermonate ab Startdatum (inkl. Monatsende-Sonderfall)
 export function calculateDueDate(startDateStr: string): string {
@@ -193,6 +205,11 @@ export default function App() {
     message: string;
   } | null>(null);
 
+  const [confirmReturnRental, setConfirmReturnRental] = useState<{
+    id: number;
+    renterName: string;
+  } | null>(null);
+
   const [currentView, setCurrentView] = useState<View>('available');
   // Segment-Umschaltung in Ausleihen: Standardmäßig "Aktuell"
   const [rentalsSubTab, setRentalsSubTab] = useState<'active' | 'completed'>('active');
@@ -213,6 +230,12 @@ export default function App() {
   // Share Signing Link Modal
   const [shareSigningRentalId, setShareSigningRentalId] = useState<number | null>(null);
 
+  // Nach einer neuen Ausleihe: Admin entscheidet zwischen eigenem Bearbeiten und externem Link.
+  const [contractChoiceRentalId, setContractChoiceRentalId] = useState<number | null>(null);
+
+  // Lokaler Pending-Status für schnelle, optimistische Zahlungsumschaltung.
+  const [paymentPendingRentalIds, setPaymentPendingRentalIds] = useState<Set<number>>(new Set());
+
   // Spezialmodi für Bundle-Bearbeitung über den normalen zentralen Bestand
   const [bundleExchange, setBundleExchange] = useState<{
     rentalId: number;
@@ -232,6 +255,7 @@ export default function App() {
 
   // Filter States: Status, Category, Size
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
+  const [equipmentGroupFilter, setEquipmentGroupFilter] = useState<'player' | 'goalie'>('player');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sizeFilter, setSizeFilter] = useState<string>('all');
 
@@ -241,19 +265,25 @@ export default function App() {
   // Accordion state for rental cards: map rental id -> isExpanded (boolean, default false)
   const [expandedRentals, setExpandedRentals] = useState<Record<number, boolean>>({});
 
-  const totalCount = items.length;
-  const availableCount = items.filter(i => i.status === 'verfügbar').length;
-  const rentedCount = items.filter(i => i.status === 'verliehen').length;
+  const itemBelongsToEquipmentGroup = (item: EquipmentItem, group: 'player' | 'goalie') => {
+    const categoryConfig = CATEGORIES.find(c => c.value === item.category || c.label === item.category_label);
+    const isGoalie = categoryConfig?.type === 'Goalie' || String(item.category_label || item.category).toLowerCase().startsWith('goalie');
+    return group === 'goalie' ? isGoalie : !isGoalie;
+  };
 
-  // Dynamically compute available categories from existing items in inventory
+  const equipmentGroupItems = items.filter(i => !i.is_deleted && itemBelongsToEquipmentGroup(i, equipmentGroupFilter));
+  const totalCount = equipmentGroupItems.length;
+  const availableCount = equipmentGroupItems.filter(i => i.status === 'verfügbar').length;
+  const rentedCount = equipmentGroupItems.filter(i => i.status === 'verliehen').length;
+
+  // Kategorien und Größen passend zur aktuell gewählten Liste Spieler / Goalie.
   const availableCategories = Array.from(
-    new Set<string>(items.map(i => i.category_label || i.category).filter((c): c is string => Boolean(c)))
+    new Set<string>(equipmentGroupItems.map(i => i.category_label || i.category).filter((c): c is string => Boolean(c)))
   ).sort((a, b) => a.localeCompare(b, 'de'));
 
-  // Dynamically compute available sizes from existing items in inventory with standard hierarchy
   const standardSizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
   const availableSizes = Array.from(
-    new Set<string>(items.map(i => i.size).filter((s): s is string => Boolean(s)))
+    new Set<string>(equipmentGroupItems.map(i => i.size).filter((sz): sz is string => Boolean(sz)))
   ).sort((a, b) => {
     const aUpper = a.trim().toUpperCase();
     const bUpper = b.trim().toUpperCase();
@@ -276,6 +306,7 @@ export default function App() {
   // Filter Pipeline: items -> Status -> Category -> Size
   const displayedItems = items.filter(item => {
     if (item.is_deleted) return false;
+    if (!itemBelongsToEquipmentGroup(item, equipmentGroupFilter)) return false;
 
     // Im Spezialmodus (Austausch oder Teil hinzufügen) ausschließlich verfügbare Teile
     if (bundleExchange || bundleAdd) {
@@ -560,15 +591,13 @@ export default function App() {
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setBag([]);
+        // Neue Tasche startet wieder mit vollständig geöffnetem Bestand.
+        setCollapsedCategories({});
         fetchItems(password);
         setCurrentView('rentals');
         setRentalsSubTab('active');
         if (data.rentalId) {
-          setContractModal({
-            isOpen: true,
-            rentalId: data.rentalId,
-            mode: 'form'
-          });
+          setContractChoiceRentalId(data.rentalId);
         }
       } else {
         const data: ApiResponse = await res.json();
@@ -604,11 +633,18 @@ export default function App() {
         })
       });
       if (res.ok) {
+        const data = await res.json();
         // Initialwert für den nächsten Verleih wieder auf 60 und +6 Monate zurücksetzen
         resetRentForm();
         setRentingItem(null);
+        // Nach dem Verleih ist der Bestand für die nächste Auswahl wieder komplett geöffnet.
+        setCollapsedCategories({});
         fetchItems(password);
-        setCurrentView('available');
+        setCurrentView('rentals');
+        setRentalsSubTab('active');
+        if (data.rentalId) {
+          setContractChoiceRentalId(data.rentalId);
+        }
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Verleihen');
@@ -622,33 +658,58 @@ export default function App() {
 
   // Alles zurückgeben (kompletter Verleihvorgang beenden)
   const handleReturnRental = async (rentalId: number) => {
-    setLoading(true);
+    const previousRental = history.find(r => r.id === rentalId);
+    if (!previousRental) return;
+
+    actionHaptic('tap');
     setError(null);
+
+    // Sofort aus "Aktuell" entfernen. Die Datenbank arbeitet danach im Hintergrund.
+    const optimisticReturnedAt = new Date().toISOString().split('T')[0];
+    setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, returned_at: optimisticReturnedAt } : r));
+    setRentalsSubTab('completed');
+    setSuccess('Rückgabe wird gespeichert …');
+
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/return`, {
         method: 'POST',
         headers: { 'x-admin-password': password }
       });
-      if (res.ok) {
-        if (editingBundleRental?.id === rentalId) {
-          setEditingBundleRental(null);
-        }
-        fetchItems(password);
-      } else {
-        const data: ApiResponse = await res.json();
+
+      if (!res.ok) {
+        const data: ApiResponse = await res.json().catch(() => ({ success: false }));
+        setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
+        setRentalsSubTab('active');
+        actionHaptic('error');
+        setSuccess(null);
         setError(data.message || 'Fehler bei der Rückgabe');
+        return;
       }
+
+      if (editingBundleRental?.id === rentalId) {
+        setEditingBundleRental(null);
+      }
+      actionHaptic('success');
+      setSuccess('Ausleihe vollständig zurückgegeben.');
+      window.setTimeout(() => setSuccess(null), 2500);
+
+      // Serverstand nachziehen, ohne die sichtbare Rückmeldung darauf warten zu lassen.
+      void fetchItems(password);
     } catch (err) {
+      setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
+      setRentalsSubTab('active');
+      actionHaptic('error');
+      setSuccess(null);
       setError('Fehler bei der Rückgabe');
-    } finally {
-      setLoading(false);
     }
   };
 
   // Einzelnes Teil aus laufendem Bundle zurückgeben
   const handleReturnSingleItemFromBundle = async (rentalId: number, itemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
+    setSuccess('Rückgabe wird gespeichert …');
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/items/${itemId}/return`, {
         method: 'POST',
@@ -659,9 +720,13 @@ export default function App() {
         body: JSON.stringify({ note })
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
+        actionHaptic('success');
+        setSuccess('Teil erfolgreich zurückgegeben.');
+        setTimeout(() => setSuccess(null), 2200);
       } else {
         const data: ApiResponse = await res.json();
+        actionHaptic('error');
         setError(data.message || 'Fehler bei der Rückgabe des Einzelteils');
       }
     } catch (err) {
@@ -673,6 +738,7 @@ export default function App() {
 
   // Neues Teil zu laufendem Bundle hinzufügen
   const handleAddItemToBundle = async (rentalId: number, itemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
     try {
@@ -699,6 +765,7 @@ export default function App() {
 
   // Teil gegen ein anderes austauschen
   const handleExchangeItemInBundle = async (rentalId: number, returnItemId: number, newItemId: number, note?: string) => {
+    actionHaptic('tap');
     setLoading(true);
     setError(null);
     try {
@@ -735,8 +802,8 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
-        method: 'PATCH',
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/payment-status`, {
+        method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'x-admin-password': password 
@@ -967,6 +1034,7 @@ export default function App() {
 
   const executeDelete = async () => {
     if (!confirmDelete) return;
+    actionHaptic('tap');
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
     
@@ -979,9 +1047,13 @@ export default function App() {
         headers: { 'x-admin-password': password }
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
+        actionHaptic('success');
+        setSuccess('Änderung gespeichert.');
+        setTimeout(() => setSuccess(null), 2000);
       } else {
         const data: ApiResponse = await res.json();
+        actionHaptic('error');
         setError(data.message || 'Fehler beim Löschen');
       }
     } catch (err) {
@@ -1033,27 +1105,47 @@ export default function App() {
   };
 
   const handleMarkAsPaid = async (rentalId: number, paid: boolean = true) => {
-    setLoading(true);
+    if (paymentPendingRentalIds.has(rentalId)) return;
+
+    const previousRental = history.find(r => r.id === rentalId);
+    const previousPaid = previousRental?.paid ?? !paid;
+
+    // Sofortige sichtbare Rückmeldung – Server-Speicherung läuft anschließend im Hintergrund.
+    setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid } : r));
+    setPaymentPendingRentalIds(prev => new Set(prev).add(rentalId));
     setError(null);
+    actionHaptic('tap');
+
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}/paid`, {
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
         method: 'PATCH',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-admin-password': password 
+          'x-admin-password': password
         },
         body: JSON.stringify({ paid })
       });
-      if (res.ok) {
-        fetchItems(password);
-      } else {
-        const data: ApiResponse = await res.json();
+
+      if (!res.ok) {
+        const data: ApiResponse = await res.json().catch(() => ({ success: false }));
+        setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid: previousPaid } : r));
         setError(data.message || (paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen'));
+        return;
       }
+
+      actionHaptic('success');
+      setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
+      window.setTimeout(() => setSuccess(null), 1800);
     } catch (err) {
+      setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid: previousPaid } : r));
+      actionHaptic('error');
       setError(paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen');
     } finally {
-      setLoading(false);
+      setPaymentPendingRentalIds(prev => {
+        const next = new Set(prev);
+        next.delete(rentalId);
+        return next;
+      });
     }
   };
 
@@ -1207,7 +1299,7 @@ export default function App() {
             </div>
           )}
 
-          <div className="mt-12 p-6 bg-[#252936] rounded-2xl border border-slate-700/60 shadow-lg text-center max-w-md mx-auto">
+          <div className="mt-10 md:mt-14 p-6 md:p-7 bg-[#252936] rounded-2xl border border-slate-700/60 shadow-lg text-center max-w-md mx-auto">
             <h3 className="text-lg font-bold text-white mb-1">Admin-Bereich</h3>
             <p className="text-slate-400 mb-4 text-xs">
               Zum Verleihen oder Verwalten des Bestands mit Passwort anmelden.
@@ -1386,6 +1478,24 @@ export default function App() {
                   </button>
                 </div>
               )}
+
+              {/* Spieler / Goalie als zwei getrennte Bestandslisten */}
+              <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-[#181B24] border border-slate-700/70">
+                <button
+                  type="button"
+                  onClick={() => { setEquipmentGroupFilter('player'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'player' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
+                >
+                  Spieler
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEquipmentGroupFilter('goalie'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'goalie' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
+                >
+                  Goalie
+                </button>
+              </div>
 
               {/* Kompakte Bestandszahlen & Statusfilter (nur im Normalmodus) */}
               {!(bundleExchange || bundleAdd) && (
@@ -1669,8 +1779,8 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  <div className="lg:col-span-2 space-y-4">
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.45fr)_minmax(380px,1fr)] gap-6 xl:gap-8 items-start">
+                  <div className="min-w-0 space-y-4">
                     <div className="flex items-center justify-between mb-2">
                       <h3 className="text-lg font-bold text-white">{bag.length} Teile ausgewählt</h3>
                       <button onClick={clearBag} className="text-sm text-red-400 hover:text-red-300 font-medium cursor-pointer">
@@ -1705,7 +1815,7 @@ export default function App() {
                     ))}
                   </div>
 
-                  <div className="bg-[#252936] p-6 rounded-3xl border border-slate-700/60 shadow-xl h-fit sticky top-24">
+                  <div className="min-w-0 w-full bg-[#252936] p-5 xl:p-6 rounded-3xl border border-slate-700/60 shadow-xl h-fit lg:sticky lg:top-24">
                     <h3 className="text-xl font-bold text-white mb-6">Verleih-Details</h3>
                     <form onSubmit={(e) => { e.preventDefault(); handleRentItems(); }} className="space-y-4">
                       <div>
@@ -1722,19 +1832,19 @@ export default function App() {
                         />
                       </div>
                       {/* Ausleihdatum und automatisch berechnetes Rückgabedatum (6 Monate) */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                         <div className="w-full min-w-0 max-w-full">
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                             Ausleihdatum
                           </label>
-                          <div className="relative w-full min-w-0 max-w-full">
-                            <Calendar className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                          <div className="w-full min-w-0 max-w-full overflow-hidden">
                             <input
                               type="date"
                               required
                               value={rentForm.rented_at}
                               onChange={(e) => handleRentedAtChange(e.target.value)}
-                              className="w-full min-w-0 max-w-full block box-border pl-10 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                              className="w-full min-w-0 max-w-full block box-border px-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                              style={{ WebkitAppearance: 'none', appearance: 'none' }}
                             />
                           </div>
                         </div>
@@ -1743,9 +1853,9 @@ export default function App() {
                           <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
                             Rückgabe bis
                           </label>
-                          <div className="px-4 py-3 rounded-xl bg-[#181B24] border border-blue-500/40 text-blue-300 font-bold text-base sm:text-sm flex items-center justify-between">
-                            <span>{formatDateDe(rentForm.due_date)}</span>
-                            <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 uppercase tracking-wider">
+                          <div className="min-w-0 px-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-slate-200 font-bold text-base sm:text-sm flex items-center justify-between gap-2">
+                            <span className="min-w-0 whitespace-nowrap">{formatDateDe(rentForm.due_date)}</span>
+                            <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300 uppercase tracking-wider">
                               6 Mon.
                             </span>
                           </div>
@@ -1870,13 +1980,14 @@ export default function App() {
                         isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : true}
                         onToggle={() => toggleRentalAccordion(rental.id, true)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
-                        onReturnAll={() => handleReturnRental(rental.id)}
+                        isPaymentPending={paymentPendingRentalIds.has(rental.id)}
+                        onReturnAll={() => setConfirmReturnRental({ id: rental.id, renterName: rental.renter_name })}
                         onReturnSingleItem={(itemId, note) => handleReturnSingleItemFromBundle(rental.id, itemId, note)}
                         onExchangeItem={(item) => startExchange(rental, item)}
                         onAddItem={() => startAddItem(rental)}
                         onEditBundle={() => setEditingBundleRental(rental)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
-                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract ? 'preview' : 'form' })}
+                        onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract?.status === 'signed' ? 'preview' : 'form' })}
                         onOpenSigningLink={(rId) => setShareSigningRentalId(rId)}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
@@ -1898,6 +2009,7 @@ export default function App() {
                         isExpanded={expandedRentals[rental.id] !== undefined ? expandedRentals[rental.id] : false}
                         onToggle={() => toggleRentalAccordion(rental.id, false)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
+                        isPaymentPending={paymentPendingRentalIds.has(rental.id)}
                         onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: 'preview' })}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
@@ -2098,17 +2210,17 @@ export default function App() {
                 </div>
 
                 {/* Datumsfeld und Rückgabe bis (6 Monate) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="w-full min-w-0 max-w-full">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0">
+                  <div className="w-full min-w-0 max-w-full overflow-hidden">
                     <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Verliehen am</label>
-                    <div className="relative w-full min-w-0 max-w-full">
-                      <Calendar className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                    <div className="w-full min-w-0 max-w-full overflow-hidden">
                       <input
                         type="date"
                         required
                         value={rentForm.rented_at}
                         onChange={(e) => handleRentedAtChange(e.target.value)}
-                        className="w-full min-w-0 max-w-full block box-border pl-10 pr-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base sm:text-sm text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                        className="w-full min-w-0 max-w-full block box-border px-3 py-3 rounded-xl bg-[#181B24] border border-slate-700 text-base text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                        style={{ WebkitAppearance: 'none', appearance: 'none' }}
                       />
                     </div>
                   </div>
@@ -2186,10 +2298,68 @@ export default function App() {
             onReturnAll={() => handleReturnRental(editingBundleRental.id)}
             onOpenContract={() => {
               const rId = editingBundleRental.id;
-              const hasContract = Boolean(editingBundleRental.contract);
+              const isSigned = editingBundleRental.contract?.status === 'signed';
               setEditingBundleRental(null);
-              setContractModal({ isOpen: true, rentalId: rId, mode: hasContract ? 'preview' : 'form' });
+              if (isSigned) {
+                setContractModal({ isOpen: true, rentalId: rId, mode: 'preview' });
+              } else {
+                setShareSigningRentalId(rId);
+              }
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: VERTRAGSWEG NACH NEUER AUSLEIHE WÄHLEN */}
+      <AnimatePresence>
+        {contractChoiceRentalId !== null && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="bg-[#252936] w-full max-w-md rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-700/80"
+            >
+              <h3 className="text-xl font-extrabold text-white">Vertrag erstellen</h3>
+              <p className="text-sm text-slate-400 mt-1.5">Wie möchtest du mit dem Vertrag fortfahren?</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
+                <button type="button"
+                  onClick={() => {
+                    const rentalId = contractChoiceRentalId;
+                    setContractChoiceRentalId(null);
+                    setShareSigningRentalId(rentalId);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
+                  <Share2 className="w-4 h-4" />
+                  Link zum Vertrag
+                </button>
+                <button type="button"
+                  onClick={() => {
+                    const rentalId = contractChoiceRentalId;
+                    setContractChoiceRentalId(null);
+                    setContractModal({ isOpen: true, rentalId, mode: 'form' });
+                  }}
+                  className="bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-4 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer">
+                  <Edit className="w-4 h-4" />
+                  Vertrag bearbeiten
+                </button>
+              </div>
+              <button type="button" onClick={() => setContractChoiceRentalId(null)}
+                className="w-full mt-3 py-2.5 text-sm text-slate-400 hover:text-white cursor-pointer">
+                Später
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: SICHEREN VERTRAGSLINK ERZEUGEN / TEILEN */}
+      <AnimatePresence>
+        {shareSigningRentalId !== null && (
+          <ShareSigningLinkModal
+            rentalId={shareSigningRentalId}
+            password={password}
+            onClose={() => setShareSigningRentalId(null)}
           />
         )}
       </AnimatePresence>
@@ -2209,6 +2379,26 @@ export default function App() {
                 renter_name: `${savedContract.first_name} ${savedContract.last_name}` 
               } : r));
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Vollständige Rückgabe bestätigen */}
+      <AnimatePresence>
+        {confirmReturnRental && (
+          <ConfirmModal
+            show={!!confirmReturnRental}
+            title="Alles zurückgeben?"
+            message={`Möchtest du die komplette Ausleihe von ${confirmReturnRental.renterName} wirklich beenden und alle aktuell ausgeliehenen Teile zurückgeben?`}
+            onConfirm={() => {
+              const rentalId = confirmReturnRental.id;
+              setConfirmReturnRental(null);
+              handleReturnRental(rentalId);
+            }}
+            onCancel={() => setConfirmReturnRental(null)}
+            confirmText="Alles zurückgeben"
+            cancelText="Abbrechen"
+            isDanger={false}
           />
         )}
       </AnimatePresence>
@@ -2579,12 +2769,14 @@ const CategoryGalleryRow: React.FC<CategoryGalleryRowProps> = ({
   );
 };
 
-// 1. ACTIVE RENTAL CARD (Bereich "Ausleihen -> Aktuell")
+// 1. ACTIVE RENTAL CARD
+// Mobile layout: compact header and equal-height equipment cards. (Bereich "Ausleihen -> Aktuell")
 interface ActiveRentalCardProps {
   rental: Rental;
   isExpanded: boolean;
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
+  isPaymentPending?: boolean;
   onReturnAll: () => void;
   onReturnSingleItem: (itemId: number, note?: string) => void;
   onExchangeItem: (item: EquipmentItem) => void;
@@ -2601,6 +2793,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
   isExpanded,
   onToggle,
   onMarkAsPaid,
+  isPaymentPending = false,
   onReturnAll,
   onReturnSingleItem,
   onExchangeItem,
@@ -2619,180 +2812,78 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
-      <div 
-        onClick={onToggle}
-        className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
-      >
-        <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white truncate">
+      {/* Kompakte Kopfzeile: Stammdaten links, Status mittig, Aktionen rechts */}
+      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 sm:gap-4 items-start border-b border-slate-800/70">
+        <div className="min-w-0">
+          <h4 className="text-lg sm:text-xl font-bold text-white leading-snug whitespace-normal break-words">
             {rental.renter_name}
           </h4>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-            <span>seit {formatDateDe(rental.rented_at)}</span>
-            {rental.due_date && (
-              <>
-                <span>·</span>
-                <span className="text-blue-300 font-semibold">Rückgabe bis {formatDateDe(rental.due_date)}</span>
-              </>
-            )}
-            <span>•</span>
-            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-            <span>•</span>
-            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
+          <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs sm:text-sm">
+            <span className="text-slate-400">Verliehen:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.rented_at)}</strong>
+            <span className="text-slate-400">Rückgabe:</span>
+            <strong className="text-slate-100">{rental.due_date ? formatDateDe(rental.due_date) : '–'}</strong>
+            <span className="text-slate-400">Gebühr:</span>
+            <strong className="text-slate-100">{rental.fee_total.toFixed(2)} €</strong>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract?.status === 'signed' ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <ShieldCheck className="w-3 h-3 text-emerald-400" />
-              <span>Vertrag signiert</span>
+        <div className="min-w-[116px] pt-0.5 flex flex-col items-stretch gap-2.5">
+          <button
+            type="button"
+            disabled={isPaymentPending}
+            onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all disabled:opacity-70 disabled:cursor-wait ${
+              rental.paid
+                ? 'text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/35'
+                : 'text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/30'
+            }`}
+            title={rental.paid ? 'Zahlungsstatus wieder auf offen setzen' : 'Zahlung als eingegangen markieren'}
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              {isPaymentPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {rental.paid ? '✓ Bezahlt' : 'Offen'}
             </span>
-          ) : rental.contract ? (
-            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <FileText className="w-3 h-3 text-indigo-400" />
-              <span>Vertrag</span>
-            </span>
-          ) : null}
+          </button>
 
-          {rental.paid ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Bezahlt
+          {rental.contract ? (
+            <span className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+              Vertrag
             </span>
           ) : (
-            <span className="text-[10px] sm:text-xs font-bold text-red-300 bg-red-500/15 border border-red-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Offen
+            <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+              <XCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              Vertrag
             </span>
           )}
+          <span className="text-xs font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
+        </div>
 
-          <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </div>
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" onClick={onToggle}
+            className="p-2 rounded-xl bg-[#181B24] text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 transition-colors cursor-pointer"
+            title={isExpanded ? 'Ausleihe einklappen' : 'Ausleihe aufklappen'}>
+            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors cursor-pointer"
+            title="Ausleihe löschen">
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
       {/* Aufgeklappter Detailbereich für aktive Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          {/* Status- & Aktionsleiste oben */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
-            <div className="text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span>Ausgeliehen seit: <strong className="text-white">{formatDateDe(rental.rented_at)}</strong></span>
-              {rental.due_date && (
-                <span className="text-blue-300 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Rückgabe bis: <strong className="text-blue-200">{formatDateDe(rental.due_date)}</strong></span>
-                </span>
-              )}
-              <span>· Gebühr: <strong className="text-white">{rental.fee_total.toFixed(2)} €</strong></span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                  rental.paid 
-                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
-                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
-                }`}
-              >
-                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
-              </button>
-            </div>
-          </div>
-
-          {/* Vertragsstatus & Schnellzugriff (Aktive Ausleihe) */}
-          {rental.contract && (
-            <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
-              rental.contract.status === 'signed'
-                ? 'bg-emerald-950/25 border-emerald-500/35 text-emerald-200'
-                : 'bg-indigo-950/25 border-indigo-500/35 text-indigo-200'
-            }`}>
-              <div className="flex items-center gap-2.5 min-w-0">
-                {rental.contract.status === 'signed' ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                ) : (
-                  <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                )}
-                <div className="min-w-0">
-                  {rental.contract.status === 'signed' ? (
-                    <p className="truncate">
-                      <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
-                      {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
-                    </p>
-                  ) : (
-                    <p className="truncate">
-                      <strong>Vertragsentwurf erfasst</strong> (noch nicht unterschrieben)
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {rental.contract.status === 'signed' && onDownloadPdf && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                    title="Signiertes Vertrags-PDF herunterladen"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>PDF laden</span>
-                  </button>
-                )}
-                {rental.contract.status !== 'signed' && onOpenSigningLink && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onOpenSigningLink(rental.id); }}
-                    className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="Link zum Unterschreiben für Entleiher erzeugen und teilen"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    <span>Link teilen</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                  className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>{rental.contract.status === 'signed' ? 'Vertrag ansehen' : 'Entwurf prüfen'}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Aktuelle Teile im Bundle mit "Teil zurückgeben"- & "Tauschen"-Aktion */}
           <div>
             <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 Aktuell ausgeliehenes Equipment ({activeItems.length}):
               </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={onAddItem}
-                  className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 hover:underline cursor-pointer"
-                  title="Neues Equipmentteil zu dieser Ausleihe hinzufügen"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Teil hinzufügen</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onEditBundle}
-                  className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1.5 hover:underline cursor-pointer"
-                >
-                  <Edit className="w-3.5 h-3.5" />
-                  <span>Bundle bearbeiten</span>
-                </button>
-              </div>
+
             </div>
 
             {activeItems.length === 0 ? (
@@ -2800,42 +2891,39 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                 {activeItems.map(item => (
-                  <div key={item.id} className="bg-[#181B24] p-3 rounded-xl border border-slate-700/60 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                        {item.image ? (
-                          <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-slate-600">
-                            <Package className="w-4 h-4" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-white truncate">{item.category_label}</p>
-                        <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
-                      </div>
+                  <div key={item.id} className="bg-[#181B24] h-[104px] rounded-xl border border-slate-700/60 p-2.5 flex items-stretch gap-3 overflow-hidden">
+                    <div className="w-[82px] h-full rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
+                      {item.image ? (
+                        <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-600">
+                          <Package className="w-6 h-6" />
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onExchangeItem(item)}
-                        className="px-2 py-1 text-[11px] font-semibold text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-600 rounded-lg border border-blue-500/30 transition-all flex items-center gap-1 cursor-pointer"
-                        title="Dieses Teil austauschen"
-                      >
-                        <ArrowRightLeft className="w-3 h-3" />
-                        <span>Tauschen</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onReturnSingleItem(item.id)}
-                        className="px-2 py-1 text-[11px] font-semibold text-amber-300 hover:text-slate-950 bg-amber-500/10 hover:bg-amber-400 rounded-lg border border-amber-500/30 transition-all flex items-center gap-1 cursor-pointer"
-                        title="Dieses Teil einzeln zurücknehmen"
-                      >
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>Zurück</span>
-                      </button>
+                    <div className="min-w-0 flex-1 flex flex-col justify-between py-0.5">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white leading-tight whitespace-normal break-words line-clamp-2">{item.category_label}</p>
+                        <p className="mt-1 text-[11px] text-slate-400 leading-tight whitespace-nowrap overflow-hidden text-ellipsis">
+                          {item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span>
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => onExchangeItem(item)}
+                          className="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil austauschen">
+                          <ArrowRightLeft className="w-3 h-3 flex-shrink-0" />
+                          <span>Tauschen</span>
+                        </button>
+                        <button type="button" onClick={() => onReturnSingleItem(item.id)}
+                          className="px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 hover:text-white bg-transparent hover:bg-slate-800 rounded-lg border border-slate-700 transition-all flex items-center justify-center gap-1 cursor-pointer"
+                          title="Dieses Teil einzeln zurücknehmen">
+                          <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+                          <span>Zurück</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -2870,74 +2958,59 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
             </div>
           )}
 
-          {/* Haupt-Aktionsleiste: Bundle bearbeiten, Alles zurückgeben, Löschen */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
-            <div className="flex flex-wrap items-center gap-2">
+          {/* Haupt-Aktionsleiste */}
+          <div className="space-y-2.5 pt-3 border-t border-slate-800">
+            {rental.contract?.status === 'signed' ? (
               <button
                 type="button"
                 onClick={onOpenContract}
-                className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                title="Einverständniserklärung / Ausleihvertrag anzeigen oder ausfüllen"
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
-                <FileText className="w-3.5 h-3.5" />
-                <span>{rental.contract ? (rental.contract.status === 'signed' ? 'Vertrag anzeigen' : 'Vertrag unterschreiben') : 'Vertrag anlegen'}</span>
+                <FileText className="w-4 h-4" />
+                <span>Vertrag anzeigen</span>
               </button>
-              {rental.contract?.status !== 'signed' && onOpenSigningLink && (
+            ) : onOpenSigningLink ? (
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={() => onOpenSigningLink(rental.id)}
-                  className="bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
+                  className="min-w-0 bg-blue-600 hover:bg-blue-500 text-white border border-blue-500 font-bold px-3 py-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
                 >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Link zum Unterschreiben</span>
+                  <Share2 className="w-4 h-4 flex-shrink-0" />
+                  <span>Link zum Vertrag</span>
                 </button>
-              )}
-              {rental.contract?.status === 'signed' && onDownloadPdf && (
                 <button
                   type="button"
-                  onClick={onDownloadPdf}
-                  className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  title="Signiertes Vertrags-PDF herunterladen"
+                  onClick={onOpenContract}
+                  className="min-w-0 bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-3 py-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>PDF herunterladen</span>
+                  <Edit className="w-4 h-4 flex-shrink-0" />
+                  <span>Vertrag bearbeiten</span>
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={onAddItem}
-                className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={onAddItem}
+                className="min-w-0 bg-[#181B24] hover:bg-[#282D3B] text-slate-200 border border-slate-700 font-bold px-2 py-2.5 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                <Plus className="w-3.5 h-3.5 flex-shrink-0" />
                 <span>Teil hinzufügen</span>
               </button>
-              <button
-                type="button"
-                onClick={onEditBundle}
-                className="bg-[#181B24] hover:bg-[#282D3B] text-blue-300 border border-blue-500/40 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              >
-                <Edit className="w-3.5 h-3.5" />
-                <span>Bundle bearbeiten</span>
-              </button>
-              <button
-                type="button"
-                onClick={onReturnAll}
-                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
+              <button type="button" onClick={onReturnAll}
+                className="min-w-0 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/35 font-bold px-2 py-2.5 rounded-xl text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
                 <span>Alles zurückgeben</span>
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={onDelete}
-              className="text-slate-500 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Ausleihe löschen"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            {rental.contract?.status === 'signed' && onDownloadPdf && (
+              <button type="button" onClick={onDownloadPdf}
+                className="w-full text-slate-400 hover:text-white text-xs py-1.5 flex items-center justify-center gap-1.5 cursor-pointer">
+                <Download className="w-3.5 h-3.5" />
+                <span>PDF herunterladen</span>
+              </button>
+            )}
+
           </div>
         </div>
       )}
@@ -2951,6 +3024,7 @@ interface CompletedRentalCardProps {
   isExpanded: boolean;
   onToggle: () => void;
   onMarkAsPaid: (paid?: boolean) => void;
+  isPaymentPending?: boolean;
   onDelete: () => void;
   onOpenContract?: () => void;
   onDownloadPdf?: () => void;
@@ -2961,247 +3035,101 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
   isExpanded,
   onToggle,
   onMarkAsPaid,
+  isPaymentPending = false,
   onDelete,
   onOpenContract,
   onDownloadPdf
 }) => {
-  // Für abgeschlossene Ausleihen: Immer alle historischen Teile anzeigen
   const allItems = rental.all_items || rental.items || rental.all_rental_items?.map(ri => ri.item).filter((i): i is EquipmentItem => Boolean(i)) || [];
   const itemCount = allItems.length;
 
   return (
     <div className="bg-[#252936] rounded-2xl border border-slate-700/60 shadow-md overflow-hidden transition-all">
-      {/* Kompakte Kopfzeile (Kein Männchen-Symbol!) */}
-      <div 
-        onClick={onToggle}
-        className="p-3.5 sm:p-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#282D3B] transition-colors"
-      >
-        <div className="min-w-0 pr-2">
-          <h4 className="text-base sm:text-lg font-bold text-white truncate">
-            {rental.renter_name}
-          </h4>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400 mt-0.5">
-            <span>{formatDateDe(rental.rented_at)} bis {formatDateDe(rental.returned_at)}</span>
-            <span>•</span>
-            <span className="font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
-            <span>•</span>
-            <span className="font-bold text-slate-200">{rental.fee_total.toFixed(2)} €</span>
+      <div className="p-4 sm:p-5 grid grid-cols-[minmax(0,1fr)_auto_auto] gap-3 sm:gap-4 items-start">
+        <div className="min-w-0">
+          <h4 className="text-lg sm:text-xl font-bold text-white leading-snug whitespace-normal break-words">{rental.renter_name}</h4>
+          <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs sm:text-sm">
+            <span className="text-slate-400">Verliehen:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.rented_at)}</strong>
+            <span className="text-slate-400">Zurück:</span>
+            <strong className="text-slate-100">{formatDateDe(rental.returned_at)}</strong>
+            <span className="text-slate-400">Gebühr:</span>
+            <strong className="text-slate-100">{rental.fee_total.toFixed(2)} €</strong>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-          {rental.contract?.status === 'signed' ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <ShieldCheck className="w-3 h-3 text-emerald-400" />
-              <span>Vertrag signiert</span>
+        <div className="min-w-[104px] flex flex-col items-stretch gap-2.5">
+          <button
+            type="button"
+            disabled={isPaymentPending}
+            onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
+            className={`w-full px-3 py-2 rounded-xl border text-xs font-extrabold uppercase tracking-wide transition-all disabled:opacity-70 disabled:cursor-wait ${
+              rental.paid
+                ? 'text-emerald-300 bg-emerald-500/15 border-emerald-500/35'
+                : 'text-red-300 bg-red-500/10 border-red-500/30'
+            }`}
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              {isPaymentPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {rental.paid ? '✓ Bezahlt' : 'Offen'}
             </span>
-          ) : rental.contract ? (
-            <span className="text-[10px] sm:text-xs font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
-              <FileText className="w-3 h-3 text-indigo-400" />
-              <span>Vertrag</span>
-            </span>
-          ) : null}
+          </button>
+          <span className={`text-[11px] font-semibold flex items-center gap-1.5 ${rental.contract ? 'text-emerald-300' : 'text-slate-400'}`}>
+            {rental.contract ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+            Vertrag
+          </span>
+          <span className="text-xs font-semibold text-slate-300">{itemCount} {itemCount === 1 ? 'Teil' : 'Teile'}</span>
+        </div>
 
-          {rental.paid ? (
-            <span className="text-[10px] sm:text-xs font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Bezahlt
-            </span>
-          ) : (
-            <span className="text-[10px] sm:text-xs font-bold text-red-300 bg-red-500/15 border border-red-500/30 px-2 py-0.5 rounded-md uppercase tracking-wider">
-              Offen
-            </span>
-          )}
-
-          <div className="p-1 rounded-lg bg-[#181B24] text-slate-400">
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </div>
+        <div className="flex flex-col items-center gap-2">
+          <button type="button" onClick={onToggle}
+            className="p-2 rounded-xl bg-[#181B24] text-slate-300 hover:text-white border border-slate-700 cursor-pointer">
+            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-2 rounded-xl text-slate-500 hover:text-red-400 hover:bg-red-500/10 cursor-pointer" title="Ausleihe löschen">
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* Aufgeklappter Detailbereich für abgeschlossene Ausleihe */}
       {isExpanded && (
         <div className="p-4 sm:p-5 border-t border-slate-800 bg-[#1F2330] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2.5 bg-[#181B24] p-3 rounded-xl border border-slate-700/60 text-xs">
-            <div className="flex flex-wrap items-center gap-3 text-slate-300">
-              <span className="flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                <span>Verliehen: <strong>{formatDateDe(rental.rented_at)}</strong></span>
-              </span>
-              {rental.due_date && (
-                <span className="flex items-center gap-1.5 text-slate-400">
-                  <span>Geplant bis: <strong className="text-slate-300">{formatDateDe(rental.due_date)}</strong></span>
-                </span>
-              )}
-              <span className="flex items-center gap-1.5 text-emerald-400">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Zurück: <strong>{formatDateDe(rental.returned_at)}</strong></span>
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {onOpenContract && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-indigo-300 bg-indigo-500/20 hover:bg-indigo-500/30 border-indigo-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Vertrag anzeigen"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  <span>{rental.contract ? 'Vertrag anzeigen' : 'Vertrag nachtragen'}</span>
-                </button>
-              )}
-
-              {rental.contract?.status === 'signed' && onDownloadPdf && (
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                  className="px-2.5 py-1 text-xs font-bold rounded-lg border text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40 transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="Signiertes Vertrags-PDF herunterladen"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>PDF laden</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onMarkAsPaid(!rental.paid); }}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                  rental.paid 
-                    ? 'text-slate-300 bg-slate-800 hover:bg-slate-700 border-slate-700' 
-                    : 'text-emerald-300 bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-500/40'
-                }`}
-              >
-                {rental.paid ? 'Als offen markieren' : 'Als bezahlt markieren'}
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                className="p-1 text-slate-500 hover:text-red-400 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-                title="Eintrag löschen"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Vertragsstatus bei abgeschlossener Ausleihe */}
-          {rental.contract ? (
-            <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
-              rental.contract.status === 'signed'
-                ? 'bg-emerald-950/25 border-emerald-500/35 text-emerald-200'
-                : 'bg-indigo-950/25 border-indigo-500/35 text-indigo-200'
-            }`}>
-              <div className="flex items-center gap-2.5 min-w-0">
-                {rental.contract.status === 'signed' ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                ) : (
-                  <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                )}
+          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Ausgeliehene Ausrüstung ({itemCount})</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {allItems.map((item, index) => (
+              <div key={item.id || index} className="bg-[#181B24] h-[88px] rounded-xl border border-slate-700/60 p-2 flex items-center gap-3 overflow-hidden">
+                <div className="w-[68px] h-[68px] rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
+                  {item.image ? <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-slate-600"><Package className="w-5 h-5" /></div>}
+                </div>
                 <div className="min-w-0">
-                  {rental.contract.status === 'signed' ? (
-                    <p className="truncate">
-                      <strong>Vertrag verbindlich unterschrieben</strong> am {formatDateTimeDe(rental.contract.signed_at)}
-                      {rental.contract.signer_name ? ` von ${rental.contract.signer_name}` : ''}
-                    </p>
-                  ) : (
-                    <p className="truncate">
-                      <strong>Vertragsentwurf erfasst</strong>
-                    </p>
-                  )}
+                  <p className="text-sm font-bold text-white leading-tight whitespace-normal break-words">{item.category_label}</p>
+                  <p className="mt-1 text-[11px] text-slate-400 leading-tight">{item.brand} · Gr. {item.size} · <span className="font-mono text-slate-300">{item.item_code}</span></p>
                 </div>
               </div>
+            ))}
+          </div>
 
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {rental.contract.status === 'signed' && onDownloadPdf && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onDownloadPdf(); }}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                    title="Signiertes PDF herunterladen"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>PDF laden</span>
-                  </button>
-                )}
-                {onOpenContract && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                    className="bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Vertrag ansehen</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : onOpenContract ? (
-            <div className="p-3 bg-[#181B24] rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs text-slate-400">
-              <span>Kein digitaler Vertrag für diese frühere Ausleihe hinterlegt.</span>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onOpenContract(); }}
-                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 border border-indigo-500/40 transition-all flex items-center gap-1 cursor-pointer"
-              >
-                <FileText className="w-3 h-3" />
-                <span>Vertrag nachtragen</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-3 border-t border-slate-800">
+            {onOpenContract && (
+              <button type="button" onClick={onOpenContract}
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer">
+                <FileText className="w-4 h-4" />
+                <span>{rental.contract ? 'Vertrag ansehen' : 'Vertrag nachtragen'}</span>
               </button>
-            </div>
-          ) : null}
-
-          {/* Verliehene Ausrüstungsteile (dauerhaft sichtbar in abgeschlossenen Vorgängen) */}
-          <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-              Ausgeliehene Ausrüstung ({itemCount}):
-            </p>
-            {allItems.length === 0 ? (
-              <p className="text-xs text-slate-500 italic bg-[#181B24] p-3 rounded-xl">Keine Teile hinterlegt.</p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                {allItems.map((item: any, idx: number) => (
-                  <div key={item.id || idx} className="flex items-center gap-3 bg-[#181B24] p-2.5 rounded-xl border border-slate-700/60">
-                    <div className="w-9 h-9 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0">
-                      {item.image ? (
-                        <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-slate-600">
-                          <Package className="w-4 h-4" />
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-white truncate">{item.category_label || item.category}</p>
-                      <p className="text-[11px] text-slate-400 truncate">{item.brand} · Gr. {item.size} · {item.item_code}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            )}
+            {rental.contract?.status === 'signed' && onDownloadPdf && (
+              <button type="button" onClick={onDownloadPdf}
+                className="w-full bg-[#181B24] hover:bg-[#282D3B] text-slate-100 border border-slate-700 font-bold px-4 py-3 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer">
+                <Download className="w-4 h-4" />
+                <span>PDF herunterladen</span>
+              </button>
             )}
           </div>
 
-          {/* Dezente historische Wechselangaben als Randinformation */}
-          {rental.all_rental_items && rental.all_rental_items.some(ri => !!ri.returned_at) && (
-            <div className="p-3 bg-[#181B24]/70 rounded-xl border border-slate-800 text-[11px] text-slate-400">
-              <span className="font-bold uppercase tracking-wider block mb-1 text-slate-500">Austausch / Verlauf:</span>
-              <ul className="space-y-0.5">
-                {rental.all_rental_items.filter(ri => !!ri.returned_at).map((ri, i) => (
-                  <li key={i}>
-                    • {ri.returned_at}: {ri.item?.category_label || 'Teil'} ({ri.item?.item_code || ''}) vorzeitig zurückgegeben {ri.exchange_note ? `(${ri.exchange_note})` : ''}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {rental.note && (
             <div className="p-3 bg-[#181B24] rounded-xl border border-slate-700/60">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz:</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Notiz</span>
               <p className="text-xs text-slate-300 italic">"{rental.note}"</p>
             </div>
           )}
@@ -3861,9 +3789,11 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
 
   const handleCopy = async () => {
     if (!shareUrl) return;
+    actionHaptic('tap');
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
+      actionHaptic('success');
       setNotice('Link erfolgreich in die Zwischenablage kopiert!');
       setTimeout(() => {
         setCopied(false);
@@ -3894,6 +3824,7 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
   };
 
   const handleGenerateNew = async () => {
+    actionHaptic('tap');
     setShowConfirmNew(false);
     setGeneratingNew(true);
     setError(null);
@@ -3909,6 +3840,7 @@ const ShareSigningLinkModal: React.FC<ShareSigningLinkModalProps> = ({
       if (res.ok && data.success) {
         setToken(data.token);
         setExpiresAt(data.expires_at);
+        actionHaptic('success');
         setNotice('Neuer Link erzeugt! Der vorherige Link ist nun ungültig.');
         setTimeout(() => setNotice(null), 4000);
       } else {
@@ -4242,6 +4174,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       return false;
     }
 
+    actionHaptic('tap');
     setSaving(true);
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/contract`, {
@@ -4270,6 +4203,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         setExistingContract(data.contract);
+        actionHaptic('success');
         setSuccess('Vertragsdaten erfolgreich gespeichert!');
         if (onContractSaved) {
           onContractSaved(data.contract);
@@ -4301,6 +4235,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
   // Verbindliche Unterschrift an Backend übertragen (Phase 2)
   const handleSignComplete = async (signatureData: string, signerNameInput: string) => {
+    actionHaptic('tap');
     setIsSigningSubmitting(true);
     setError(null);
     try {
@@ -4320,6 +4255,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
       if (res.ok && data.success) {
         setExistingContract(data.contract);
         setShowSignatureModal(false);
+        actionHaptic('success');
         setSuccess('Vertrag erfolgreich verbindlich unterschrieben und als PDF archiviert!');
         if (onContractSaved) {
           onContractSaved(data.contract);
@@ -5248,7 +5184,8 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
     expires_at: string;
   } | null>(null);
 
-  const [isEditingPersonalData, setIsEditingPersonalData] = useState<boolean>(false);
+  // Externer Signierlink startet bewusst mit der Dateneingabe. Erst danach folgt die Vertragsvorschau.
+  const [isEditingPersonalData, setIsEditingPersonalData] = useState<boolean>(true);
   const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
   const [savingPersonalData, setSavingPersonalData] = useState<boolean>(false);
 
@@ -5382,8 +5319,12 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccess('Ihre persönlichen Angaben wurden erfolgreich gespeichert!');
+        setSuccess('Ihre Angaben wurden übernommen. Bitte prüfen Sie jetzt den vollständigen Vertrag.');
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         setIsEditingPersonalData(false);
+        window.setTimeout(() => window.scrollTo({ top: 0, behavior: 'auto' }), 0);
         return true;
       } else {
         setError(data.message || 'Fehler beim Speichern Ihrer Angaben.');
@@ -5514,6 +5455,124 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
   const feeAmount = contractData.contract.fee_amount !== undefined ? Number(contractData.contract.fee_amount) : (rental?.fee_total || 60.00);
   const depositAmount = contractData.contract.deposit_amount !== undefined ? Number(contractData.contract.deposit_amount) : 50.00;
   const totalAmount = feeAmount + depositAmount;
+
+  // ERSTER SCHRITT: Persönliche Daten erfassen. Der vollständige Vertrag wird
+  // bewusst erst nach erfolgreichem Speichern angezeigt.
+  if (isEditingPersonalData) {
+    return (
+      <div className="min-h-screen bg-[#141720] text-slate-200 p-3 sm:p-6 flex flex-col items-center">
+        <div className="w-full max-w-xl space-y-4">
+          <div className="bg-[#181B24] border border-slate-800 rounded-3xl p-4 sm:p-5 flex items-center gap-3 shadow-lg">
+            <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex-shrink-0">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-base sm:text-lg font-black text-white">{VEREIN_INFO.name}</h1>
+              <p className="text-xs text-slate-400">Ausleihvertrag · Persönliche Angaben</p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center justify-between gap-2">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError(null)} className="text-red-400 hover:text-red-200">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="bg-[#181B24] border border-slate-700/80 rounded-3xl p-5 sm:p-7 shadow-2xl">
+            <div className="mb-5">
+              <h2 className="text-xl font-black text-white">Persönliche Daten</h2>
+              <p className="text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
+                Bitte ergänzen Sie zunächst Ihre Angaben. Anschließend sehen Sie den vollständig ausgefüllten Vertrag und können ihn in Ruhe prüfen und unterschreiben.
+              </p>
+            </div>
+
+            <form onSubmit={handleSavePersonalData} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Name des Kindes (Spieler/in) *</label>
+                <input type="text" required value={formData.child_name} onChange={(e) => setFormData({ ...formData, child_name: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="z. B. Tim Mustermann" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Vorname *</label>
+                  <input type="text" required value={formData.first_name} onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Max" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Nachname *</label>
+                  <input type="text" required value={formData.last_name} onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Mustermann" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_8rem] gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Straße *</label>
+                  <input type="text" required value={formData.street} onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Musterstraße" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Hausnr. *</label>
+                  <input type="text" required value={formData.house_number} onChange={(e) => setFormData({ ...formData, house_number: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="12a" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-[8rem_1fr] gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">PLZ *</label>
+                  <input type="text" required value={formData.postal_code} onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="31275" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Ort *</label>
+                  <input type="text" required value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="Lehrte" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Telefonnummer *</label>
+                <input type="tel" required value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="0171 1234567" />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">E-Mail-Adresse *</label>
+                <input type="email" required value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="max@mustermann.de" />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">IBAN (SEPA-Lastschrift) *</label>
+                <input type="text" required value={formData.iban} onChange={handleIbanChange}
+                  className="w-full px-3 py-3 rounded-xl bg-[#1F2330] border border-slate-700 text-white font-mono text-base focus:ring-2 focus:ring-blue-500 outline-none box-border" placeholder="DE89 3705 0198 0000 0123 45" />
+              </div>
+
+              <button type="submit" disabled={savingPersonalData}
+                className="w-full mt-2 px-4 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm cursor-pointer shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+                {savingPersonalData ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Angaben werden gespeichert...</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowRight className="w-4 h-4" />
+                    <span>Weiter zum Vertrag</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#141720] text-slate-200 p-3 sm:p-6 flex flex-col items-center">
@@ -6009,18 +6068,6 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
             </div>
           </div>
 
-        </div>
-
-        {/* BOTTOM ACTION BUTTON */}
-        <div className="pt-2 flex justify-center pb-8">
-          <button
-            type="button"
-            onClick={handleStartSignFlow}
-            className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl transition-all active:scale-95 cursor-pointer"
-          >
-            <PenTool className="w-5 h-5" />
-            <span>Vertrag jetzt verbindlich unterschreiben</span>
-          </button>
         </div>
 
       </div>

@@ -79,3 +79,16 @@
     width: 255px;
   }
 }
+
+
+/* Sofortige sichtbare Druck-Rückmeldung für Touch- und Mausaktionen.
+   Ergänzt echte Vibration dort, wo der Browser die Vibrate API unterstützt. */
+button:not(:disabled) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.975);
+  filter: brightness(1.08);
+  transition: transform 70ms ease, filter 70ms ease;
+}
