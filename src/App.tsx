@@ -43,6 +43,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
 import { hydrateRentalImages } from './rentalImages';
+import { useButtonSound, SoundToggle } from './components/ButtonSound';
 import { ContractDeliveryStatus } from './components/ContractDeliveryStatus';
 
 const API_BASE = '/api';
@@ -155,6 +156,7 @@ interface ApiResponse<T = any> {
 }
 
 export default function App() {
+  const sound = useButtonSound();
   const [publicSignToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       // 1. Primär aus URL-Hash auslesen (#sign=TOKEN oder #token=TOKEN)
@@ -259,11 +261,10 @@ export default function App() {
   const [autoScrollTargetCategory, setAutoScrollTargetCategory] = useState<string | null>(null);
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  // Filter States: Status, Category, Size
+  // Filter States: Status, Category
   const [statusFilter, setStatusFilter] = useState<'all' | 'verfügbar' | 'verliehen'>('all');
   const [equipmentGroupFilter, setEquipmentGroupFilter] = useState<'player' | 'goalie'>('player');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [sizeFilter, setSizeFilter] = useState<string>('all');
 
   // Accordion state for inventory categories: map category name -> isCollapsed (boolean)
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
@@ -282,34 +283,16 @@ export default function App() {
   const availableCount = equipmentGroupItems.filter(i => i.status === 'verfügbar').length;
   const rentedCount = equipmentGroupItems.filter(i => i.status === 'verliehen').length;
 
-  // Kategorien und Größen passend zur aktuell gewählten Liste Spieler / Goalie.
+  // Kategorien passend zur aktuell gewählten Liste Spieler / Goalie.
   const availableCategories = Array.from(
     new Set<string>(equipmentGroupItems.map(i => i.category_label || i.category).filter((c): c is string => Boolean(c)))
   ).sort((a, b) => a.localeCompare(b, 'de'));
 
-  const standardSizeOrder = ['JR', 'SR', 'XS', 'S', 'M', 'L', 'XL', 'XXL'];
-  const availableSizes = Array.from(
-    new Set<string>(equipmentGroupItems.map(i => i.size).filter((sz): sz is string => Boolean(sz)))
-  ).sort((a, b) => {
-    const aUpper = a.trim().toUpperCase();
-    const bUpper = b.trim().toUpperCase();
-    const aIdx = standardSizeOrder.indexOf(aUpper);
-    const bIdx = standardSizeOrder.indexOf(bUpper);
-    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
-    if (aIdx !== -1) return -1;
-    if (bIdx !== -1) return 1;
-    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-  });
+  const hasActiveExtraFilters = categoryFilter !== 'all';
 
-  const hasActiveExtraFilters = categoryFilter !== 'all' || sizeFilter !== 'all';
+  const resetCategoryFilter = () => setCategoryFilter('all');
 
-  // Subtle reset ONLY resets Category and Size, keeps Status unchanged
-  const resetCategoryAndSizeFilters = () => {
-    setCategoryFilter('all');
-    setSizeFilter('all');
-  };
-
-  // Filter Pipeline: items -> Status -> Category -> Size
+  // Filter Pipeline: items -> Status -> Category
   const displayedItems = items.filter(item => {
     if (item.is_deleted) return false;
     if (!itemBelongsToEquipmentGroup(item, equipmentGroupFilter)) return false;
@@ -326,9 +309,6 @@ export default function App() {
     }
 
     if (categoryFilter !== 'all' && item.category_label !== categoryFilter && item.category !== categoryFilter) {
-      return false;
-    }
-    if (sizeFilter !== 'all' && item.size.trim().toLowerCase() !== sizeFilter.trim().toLowerCase()) {
       return false;
     }
     return true;
@@ -866,7 +846,6 @@ export default function App() {
 
     // Filter bereinigen
     setCategoryFilter('all');
-    setSizeFilter('all');
     setStatusFilter('verfügbar');
 
     // Alle Kategorien schließen, NUR die Kategorie des auszutauschenden Teils öffnen
@@ -902,7 +881,6 @@ export default function App() {
 
     // Filter bereinigen
     setCategoryFilter('all');
-    setSizeFilter('all');
     setStatusFilter('verfügbar');
 
     // ALLE Kategorien schließen
@@ -929,7 +907,6 @@ export default function App() {
 
     setStatusFilter('all');
     setCategoryFilter('all');
-    setSizeFilter('all');
 
     setCurrentView('history');
     setRentalsSubTab('active');
@@ -1241,11 +1218,12 @@ export default function App() {
               <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center border border-blue-500/30">
                 <Package className="text-blue-400 w-5 h-5" />
               </div>
-              <h1 className="text-lg font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-              <span className="text-emerald-400 font-bold text-xs uppercase tracking-wider">{publicItems.length} Verfügbar</span>
+              <span className="text-emerald-400 font-bold text-[10px] sm:text-xs uppercase tracking-wider">{publicItems.length} Verfügbar</span>
+              <SoundToggle {...sound} />
             </div>
           </div>
         </header>
@@ -1342,11 +1320,12 @@ export default function App() {
               <Package className="text-blue-400 w-5 h-5" />
             </div>
             <div className="flex items-center gap-2">
-              <h1 className="text-lg md:text-xl font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
-              <span className="text-[10px] md:text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-blue-300 border border-slate-700">Admin</span>
+              <h1 className="text-sm sm:text-lg md:text-xl font-bold tracking-tight text-white">Wiesel HockeyRent</h1>
+              <span className="hidden sm:inline text-[10px] md:text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-blue-300 border border-slate-700">Admin</span>
             </div>
           </div>
           
+          <SoundToggle {...sound} />
           <nav className="hidden md:flex items-center gap-1.5">
             <TabButton active={currentView === 'available'} onClick={() => setCurrentView('available')} icon={<Package className="w-4 h-4" />} label="Bestand" />
             <TabButton active={currentView === 'bag'} onClick={() => setCurrentView('bag')} icon={<ShoppingBag className="w-4 h-4" />} label="Tasche" count={bag.length} />
@@ -1486,14 +1465,14 @@ export default function App() {
               <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-[#181B24] border border-slate-700/70">
                 <button
                   type="button"
-                  onClick={() => { setEquipmentGroupFilter('player'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  onClick={() => { setEquipmentGroupFilter('player'); setCategoryFilter('all'); setCollapsedCategories({}); }}
                   className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'player' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
                 >
                   Spieler
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setEquipmentGroupFilter('goalie'); setCategoryFilter('all'); setSizeFilter('all'); setCollapsedCategories({}); }}
+                  onClick={() => { setEquipmentGroupFilter('goalie'); setCategoryFilter('all'); setCollapsedCategories({}); }}
                   className={`py-2.5 px-3 rounded-xl text-sm font-bold transition-all cursor-pointer ${equipmentGroupFilter === 'goalie' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-white hover:bg-[#252936]'}`}
                 >
                   Goalie
@@ -1559,9 +1538,9 @@ export default function App() {
               </div>
               )}
 
-              {/* Filterleiste: Kategorie & Größe */}
-              <div className="bg-[#252936] p-3.5 md:p-4 rounded-2xl border border-slate-700/60 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 flex-1 max-w-xl">
+              {/* Kompakter Kategorienfilter */}
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 w-64 max-w-full">
                   {/* Kategorie Dropdown */}
                   <div className="relative">
                     <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
@@ -1585,38 +1564,18 @@ export default function App() {
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                   </div>
 
-                  {/* Größe Dropdown */}
-                  <div className="relative">
-                    <select
-                      aria-label="Größe filtern"
-                      value={sizeFilter}
-                      onChange={(e) => setSizeFilter(e.target.value)}
-                      className={`w-full pl-3.5 pr-8 py-2.5 rounded-xl border text-base sm:text-sm font-medium outline-none transition-all appearance-none cursor-pointer truncate ${
-                        sizeFilter !== 'all'
-                          ? 'bg-[#181B24] border-blue-500 text-blue-300 font-bold'
-                          : 'bg-[#181B24] border-slate-700 text-slate-300 hover:border-slate-600 focus:border-blue-500'
-                      }`}
-                    >
-                      <option value="all">Alle Größen</option>
-                      {availableSizes.map(sz => (
-                        <option key={sz} value={sz}>
-                          Größe: {sz}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-                  </div>
+
                 </div>
 
                 {hasActiveExtraFilters && (
                   <button
                     type="button"
-                    onClick={resetCategoryAndSizeFilters}
+                    onClick={resetCategoryFilter}
                     className="text-xs font-semibold text-slate-400 hover:text-white bg-[#181B24] hover:bg-[#282D3B] border border-slate-700 px-3.5 py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer self-start sm:self-auto"
-                    title="Kategorie- und Größenfilter zurücksetzen"
+                    title="Kategorienfilter zurücksetzen" aria-label="Kategorienfilter zurücksetzen"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-                    <span>Filter zurücksetzen</span>
+                    <span className="hidden sm:inline">Zurücksetzen</span>
                   </button>
                 )}
               </div>
