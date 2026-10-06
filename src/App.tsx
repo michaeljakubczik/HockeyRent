@@ -499,6 +499,7 @@ export default function App() {
       setError('Bitte Kategorie, Marke und Größe ausfüllen.');
       return;
     }
+    sound.prepare();
     setLoading(true);
     setError(null);
     const category_label = CATEGORIES.find(c => c.value === newItem.category)?.label || newItem.category;
@@ -512,6 +513,7 @@ export default function App() {
         body: JSON.stringify({ ...newItem, category_label })
       });
       if (res.ok) {
+        sound.play('create');
         setNewItem({ category: 'Helm', size: '', brand: '', image: null, condition_note: '' });
         await fetchItems(password);
         setCurrentView('available');
@@ -656,6 +658,7 @@ export default function App() {
     const previousRental = history.find(r => r.id === rentalId);
     if (!previousRental) return;
 
+    sound.prepare();
     actionHaptic('tap');
     setLoading(true);
     setError(null);
@@ -682,6 +685,7 @@ export default function App() {
       }
       setRentalsSubTab('completed');
       actionHaptic('success');
+      sound.play('return');
       setSuccess(`${data.returned_count ?? 'Alle'} Teile erfolgreich zurückgegeben.`);
       window.setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -695,6 +699,7 @@ export default function App() {
 
   // Einzelnes Teil aus laufendem Bundle zurückgeben
   const handleReturnSingleItemFromBundle = async (rentalId: number, itemId: number, note?: string) => {
+    sound.prepare();
     actionHaptic('tap');
     setLoading(true);
     setError(null);
@@ -711,6 +716,7 @@ export default function App() {
       if (res.ok) {
         if (!await fetchItems(password)) { setSuccess(null); return; }
         actionHaptic('success');
+        sound.play('return');
         setSuccess('Teil erfolgreich zurückgegeben.');
         setTimeout(() => setSuccess(null), 2200);
       } else {
@@ -1020,6 +1026,7 @@ export default function App() {
 
   const executeDelete = async () => {
     if (!confirmDelete) return;
+    sound.prepare();
     actionHaptic('tap');
     const { type, id } = confirmDelete;
     setConfirmDelete(null);
@@ -1035,6 +1042,7 @@ export default function App() {
       if (res.ok) {
         if (!await fetchItems(password)) { setSuccess(null); return; }
         actionHaptic('success');
+        sound.play('delete');
         setSuccess('Änderung gespeichert.');
         setTimeout(() => setSuccess(null), 2000);
       } else {
@@ -1057,7 +1065,9 @@ export default function App() {
     if (isCurrentlyInBag) {
       setBag(prev => prev.filter(i => i.id !== item.id));
     } else {
+      sound.prepare();
       setBag(prev => [...prev, item]);
+      sound.play('bag');
       // Auto-collapse this category to accelerate bundle creation workflow
       if (cat) {
         setCollapsedCategories(prev => ({ ...prev, [cat]: true }));
@@ -1101,6 +1111,7 @@ export default function App() {
     setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, paid } : r));
     setPaymentPendingRentalIds(prev => new Set(prev).add(rentalId));
     setError(null);
+    if (paid && previousPaid !== paid) sound.prepare();
     actionHaptic('tap');
 
     try {
@@ -1127,6 +1138,7 @@ export default function App() {
       if (data.summary) setHistorySummary(data.summary);
       else if (previousRental && previousPaid !== paid) setHistorySummary(prev => ({ ...prev, paidRevenue: Number(prev.paidRevenue) + (paid ? 1 : -1) * Number(previousRental.fee_total) }));
       actionHaptic('success');
+      if (paid && previousPaid !== paid) sound.play('money');
       setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
       window.setTimeout(() => setSuccess(null), 1800);
     } catch (err) {
