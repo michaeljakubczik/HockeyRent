@@ -4,6 +4,7 @@ import request from 'supertest';
 import { createApp } from '../api/index.js';
 import { createContractSnapshot } from '../src/contractTemplate.js';
 import { PNG } from 'pngjs';
+import { MailFailure } from '../server/contractMail.js';
 import { database,mutate,contract,fields,seed } from './database.js';
 
 test('API login, paid/open, details, returns and complete admin/public contract flows',async()=>{
@@ -18,6 +19,8 @@ test('API login, paid/open, details, returns and complete admin/public contract 
    let data:any;
    if(name==='hockey_mutate_rental') data=await mutate(db,args.p_action,args.p_data);
    else if(name==='hockey_contract_write') data=await contract(db,args.p_action,args.p_id,args.p_data,args.p_token,args.p_review_hash,args.p_template);
+   else if(name==='hockey_contract_mail') data=(await db.query<any>('select hockey_contract_mail($1,$2,$3,$4,$5::jsonb) result',
+     [args.p_action,args.p_rental,args.p_job??null,args.p_token??null,JSON.stringify(args.p_data??{})])).rows[0].result;
    else data=(await db.query<any>('select hockey_rate_limit($1,$2,$3) result',[args.p_key,args.p_limit,args.p_window])).rows[0].result;
    return {data,error:null};
   } catch(err:any) {return {data:null,error:{code:err.code,message:err.message}};}
@@ -27,7 +30,8 @@ test('API login, paid/open, details, returns and complete admin/public contract 
    const result=await db.query<any>(`select ${column} from ${table} where ${key}=$1`,[value]);return {data:result.rows[0]||null,error:null};
   }};return builder;
  }};
- const app=await createApp({supabase,password:'test-password'});
+ const mailTransport={provider:'mock',send:async()=>{throw new MailFailure('simulated provider rejection');}};
+ const app=await createApp({supabase,password:'test-password',mailTransport});
  const api=request(app);
  try {
   const rental=await seed(db); const id=rental.rentalId;
@@ -43,9 +47,12 @@ test('API login, paid/open, details, returns and complete admin/public contract 
   const save=await admin('post',`/api/rentals/${id}/contract`).send({...fields,fee_amount:0}).expect(200);
   const png=new PNG({width:200,height:80});for(let x=20;x<140;x++)png.data[(40*200+x)*4+3]=255;
   const signature='data:image/png;base64,'+PNG.sync.write(png).toString('base64');
-  const secondInstance=request(await createApp({supabase,password:'test-password'}));
+  const secondInstance=request(await createApp({supabase,password:'test-password',mailTransport}));
   const sign=await secondInstance.post(`/api/rentals/${id}/contract/sign`).set('x-admin-password',session).send({signature_data:signature,signer_name:'Test Person',review_hash:save.body.review_hash}).expect(200);
   assert.equal(sign.body.contract.status,'signed');
+  const failedMail=await admin('get',`/api/rentals/${id}/contract/email`).expect(200);
+  assert.equal(failedMail.body.deliveries.length,2);
+  assert.ok(failedMail.body.deliveries.every((job:any)=>job.status==='failed'));
   await admin('get',`/api/rentals/${id}/contract/pdf`).expect(200).expect('Content-Type',/pdf/);
   await admin('post',`/api/rentals/${id}/contract`).send(fields).expect(409);
   await admin('post',`/api/rentals/${id}/return`).send({}).expect(200);
@@ -58,6 +65,9 @@ test('API login, paid/open, details, returns and complete admin/public contract 
   assert.equal(publicSave.body.contract.fee_amount,60);
   assert.equal(publicSave.body.contract.signing_token_hash,undefined);
   await api.post('/api/public/contract/sign').send({token,signature_data:signature,signer_name:'Test Person',review_hash:publicSave.body.review_hash}).expect(200);
+  const publicMail=await admin('get',`/api/rentals/${other.rentalId}/contract/email`).expect(200);
+  assert.equal(publicMail.body.deliveries.length,2);
+  assert.ok(publicMail.body.deliveries.every((job:any)=>job.status==='failed'));
   await api.get('/api/public/contract').query({token}).expect(410);
   assert.equal(files.size,2);
  } finally {await db.close();}

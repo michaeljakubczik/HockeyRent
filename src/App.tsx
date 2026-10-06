@@ -43,6 +43,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
 import { hydrateRentalImages } from './rentalImages';
+import { ContractDeliveryStatus } from './components/ContractDeliveryStatus';
 
 const API_BASE = '/api';
 
@@ -4740,6 +4741,8 @@ const ContractModal: React.FC<ContractModalProps> = ({
                   </button>
                 </div>
               )}
+
+              {isSigned && <ContractDeliveryStatus rentalId={rentalId} password={password} />}
 
               {/* Offizielles Dokumentenblatt */}
               <div className="bg-[#181B24] p-5 sm:p-8 rounded-2xl border border-slate-700/80 shadow-xl space-y-6 text-slate-200 text-xs sm:text-sm">

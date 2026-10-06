@@ -5,6 +5,7 @@ import { HttpError, positiveId, money, date, text, contractFields, validateSigna
 import { createClient } from "@supabase/supabase-js";
 import { generateContractPdf } from "../src/pdfGenerator.js";
 import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate.js";
+import { configuredMailTransport, createContractMailer, type MailTransport } from '../server/contractMail.js';
 
 dotenv.config();
 
@@ -70,8 +71,10 @@ export function calculateSixMonthsDueDate(startDateStr: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-export async function createApp(options: { supabase?: any; password?: string } = {}) {
+export async function createApp(options: { supabase?: any; password?: string; mailTransport?: MailTransport | null } = {}) {
   const getSupabase = () => options.supabase || getConfiguredSupabase();
+  const mailTransport = () => options.mailTransport === undefined ? configuredMailTransport() : options.mailTransport;
+  const contractMailer = createContractMailer(getSupabase, mailTransport);
   const app = express();
   const PORT = 3000;
 
@@ -410,8 +413,11 @@ export async function createApp(options: { supabase?: any; password?: string } =
     const {error}=await getSupabase().storage.from('hockey-contracts').upload(storagePath,Buffer.from(pdf),{contentType:'application/pdf',upsert:false});
     if (error) throw new HttpError(503,'PDF konnte nicht archiviert werden. Der Vertrag wurde nicht abgeschlossen.');
     try {
-      return await contractRpc('sign',id,{signature_data:signature,signer_name:name,signed_at:signedAt,pdf_path:storagePath,
+      const result = await contractRpc('sign',id,{signature_data:signature,signer_name:name,signed_at:signedAt,pdf_path:storagePath,
         pdf_sha256:crypto.createHash('sha256').update(pdf).digest('hex'),contract_version:CURRENT_CONTRACT_VERSION},token,body.review_hash);
+      // Signing is complete. Mail failures must never roll back or remove its PDF.
+      try { await contractMailer.send(id); } catch { console.error('Contract mail processing unavailable'); }
+      return result;
     } catch(error) {
       const {error:cleanupError}=await getSupabase().storage.from('hockey-contracts').remove([storagePath]);
       if(cleanupError) console.error('PDF cleanup failed',cleanupError.code);
@@ -423,6 +429,13 @@ export async function createApp(options: { supabase?: any; password?: string } =
     const {id,hash}=await publicContract(req.body.token);
     await finalizeContractSigning(id,req.body,hash);
     res.json({success:true,message:'Vertrag erfolgreich unterschrieben.'});
+  }));
+
+  app.get('/api/rentals/:id/contract/email',authHeader,run(async(req,res)=>{
+    res.json({success:true,...await contractMailer.status(positiveId(req.params.id))});
+  }));
+  app.post('/api/rentals/:id/contract/email',authHeader,limit('contract-mail',20),run(async(req,res)=>{
+    res.json({success:true,...await contractMailer.send(positiveId(req.params.id))});
   }));
 
   app.get("/api/rentals/:id/contract/pdf", authHeader, async (req, res) => {
