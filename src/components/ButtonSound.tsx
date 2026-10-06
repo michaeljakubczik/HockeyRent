@@ -24,20 +24,27 @@ export function useButtonSound() {
         const audio = context.current ?? (context.current = new Audio());
         const play = () => {
           if (audio.state !== 'running' || document.hidden) return;
-          const oscillator = audio.createOscillator();
+          // A soft, filtered 18 ms noise impulse sounds like a button click.
+          const duration = 0.018;
+          const buffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * duration), audio.sampleRate);
+          const samples = buffer.getChannelData(0);
+          for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+          const source = audio.createBufferSource();
+          source.buffer = buffer;
+          const filter = audio.createBiquadFilter();
+          filter.type = 'lowpass';
+          filter.frequency.value = 2400;
+          filter.Q.value = 0.5;
           const gain = audio.createGain();
           const now = audio.currentTime;
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(720, now);
-          oscillator.frequency.exponentialRampToValueAtTime(560, now + 0.075);
           gain.gain.setValueAtTime(0, now);
-          gain.gain.linearRampToValueAtTime(0.06, now + 0.005);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-          oscillator.connect(gain);
+          gain.gain.linearRampToValueAtTime(0.09, now + 0.001);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+          source.connect(filter);
+          filter.connect(gain);
           gain.connect(audio.destination);
-          oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
-          oscillator.start(now);
-          oscillator.stop(now + 0.085);
+          source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
+          source.start(now);
         };
         if (audio.state === 'running') play();
         else void audio.resume().then(play).catch(() => {});
