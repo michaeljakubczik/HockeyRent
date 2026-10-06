@@ -389,59 +389,65 @@ function calculateDueDate(startDateStr: string): string {
   app.post("/api/rentals/:id/return", authHeader, async (req, res) => {
     const supabase = getSupabase();
     const { id } = req.params;
-    
+
     try {
       const returned_at = new Date().toISOString().split('T')[0];
-      
-      // 1. Get all items in this rental
-      const { data: riData, error: riError } = await supabase
-        .from('hockey_rental_items')
-        .select('id, item_id, returned_at')
-        .eq('rental_id', id);
 
-      if (riError) throw riError;
-      
-      if (!riData || riData.length === 0) {
-        return res.status(404).json({ success: false, message: "Keine Items für diesen Verleih gefunden." });
+      const { data: rental, error: rentalLookupError } = await supabase
+        .from('hockey_rentals')
+        .select('id, returned_at')
+        .eq('id', id)
+        .single();
+      if (rentalLookupError || !rental) {
+        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
+      }
+      if (rental.returned_at) {
+        return res.json({ success: true, returned_at: rental.returned_at, returned_count: 0, already_returned: true });
       }
 
-      // Filter only active items (not already returned)
-      const activeItems = riData.filter((ri: any) => !ri.returned_at);
+      const { data: activeItems, error: riError } = await supabase
+        .from('hockey_rental_items')
+        .select('id, item_id')
+        .eq('rental_id', id)
+        .is('returned_at', null);
+      if (riError) throw riError;
+      if (!activeItems || activeItems.length === 0) {
+        return res.status(409).json({ success: false, message: "Keine aktiven Teile in diesem Verleih gefunden." });
+      }
+
       const itemIds = activeItems.map((ri: any) => ri.item_id);
 
-      if (itemIds.length > 0) {
-        const { error: itemError } = await supabase
-          .from('hockey_equipment_items')
-          .update({ status: 'verfügbar' })
-          .in('id', itemIds);
-
-        if (itemError) throw itemError;
-      }
-
-      // Mark returned_at on rental_items where returned_at was null
-      await supabase
+      const { data: returnedRows, error: returnItemsError } = await supabase
         .from('hockey_rental_items')
         .update({ returned_at })
         .eq('rental_id', id)
-        .is('returned_at', null);
+        .is('returned_at', null)
+        .select('id, item_id, returned_at');
+      if (returnItemsError) throw returnItemsError;
+      if (!returnedRows || returnedRows.length !== activeItems.length) {
+        throw new Error(`Nicht alle Mietpositionen wurden zurückgegeben (${returnedRows?.length || 0}/${activeItems.length}).`);
+      }
 
-      const { error: rentalError } = await supabase
+      const { data: completedRental, error: rentalError } = await supabase
         .from('hockey_rentals')
         .update({ returned_at })
-        .eq('id', id);
+        .eq('id', id)
+        .is('returned_at', null)
+        .select('id, returned_at')
+        .single();
+      if (rentalError || !completedRental) throw rentalError || new Error("Verleih konnte nicht abgeschlossen werden.");
 
-      if (rentalError) {
-        if (itemIds.length > 0) {
-          await supabase.from('hockey_equipment_items').update({ status: 'verliehen' }).in('id', itemIds);
-        }
-        throw rentalError;
-      }
-      
-      console.log(`[Rental Returned]: ID ${id} on ${returned_at}`);
-      res.json({ success: true, returned_at });
+      const { error: itemError } = await supabase
+        .from('hockey_equipment_items')
+        .update({ status: 'verfügbar' })
+        .in('id', itemIds);
+      if (itemError) throw itemError;
+
+      console.log(`[Rental Returned]: ID ${id}, ${itemIds.length} items on ${returned_at}`);
+      res.json({ success: true, returned_at, returned_count: itemIds.length });
     } catch (err: any) {
       console.error(`[Rental Return Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler bei der Rückgabe des Equipments." });
+      res.status(500).json({ success: false, message: `Rückgabe fehlgeschlagen: ${err.message}` });
     }
   });
 
