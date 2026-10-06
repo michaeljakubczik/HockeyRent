@@ -343,10 +343,10 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
   currentPage.drawText(formatDateDe(effectiveDueDate), { x: MARGIN_LEFT + quarter, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.12, 0.35, 0.65) });
 
   currentPage.drawText('Abnutzungsgebühr:', { x: MARGIN_LEFT + quarter * 2, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
-  currentPage.drawText(`${Number(contract.fee_amount || 60).toFixed(2)} €`, { x: MARGIN_LEFT + quarter * 2, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.1, 0.12, 0.15) });
+  currentPage.drawText(`${Number(contract.fee_amount ?? 60).toFixed(2)} €`, { x: MARGIN_LEFT + quarter * 2, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.1, 0.12, 0.15) });
 
   currentPage.drawText('Kaution (Sicherheit):', { x: MARGIN_LEFT + quarter * 3, y: y - 12, size: 7.5, font: regularFont, color: rgb(0.4, 0.45, 0.5) });
-  currentPage.drawText(`${Number(contract.deposit_amount || 50).toFixed(2)} €`, { x: MARGIN_LEFT + quarter * 3, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.15, 0.55, 0.25) });
+  currentPage.drawText(`${Number(contract.deposit_amount ?? 50).toFixed(2)} €`, { x: MARGIN_LEFT + quarter * 3, y: y - 24, size: 8.5, font: boldFont, color: rgb(0.15, 0.55, 0.25) });
 
   y -= 44;
 
@@ -681,15 +681,8 @@ export async function generateContractPdf(params: GenerateContractPdfParams): Pr
         width: dims.width,
         height: dims.height,
       });
-    } catch (sigErr) {
-      console.error('Fehler beim Einbetten der PNG-Signatur:', sigErr);
-      currentPage.drawText('[Elektronisch gezeichnet]', {
-        x: signCol2X + 16,
-        y: y - 35,
-        size: 8.5,
-        font: boldFont,
-        color: rgb(0.2, 0.5, 0.3),
-      });
+    } catch {
+      throw new Error('Unterschrift konnte nicht in das PDF eingebettet werden.');
     }
   } else {
     currentPage.drawText('[Unterschrift Entleiher]', {

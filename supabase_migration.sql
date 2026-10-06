@@ -1,3 +1,5 @@
+-- Legacy migration: use versioned supabase/migrations for future changes.
+BEGIN;
 -- ==============================================================================
 -- WIESEL HOCKEYRENT: KORRIGIERTE SQL-MIGRATION
 -- 1. Bestehende Daten historisch exakt initialisieren (added_at / returned_at)
@@ -33,7 +35,7 @@ SET
   added_at = COALESCE(r.rented_at::date, CURRENT_DATE),
   returned_at = r.returned_at::date
 FROM public.hockey_rentals r
-WHERE ri.rental_id = r.id;
+WHERE ri.rental_id = r.id AND ri.added_at IS NULL;
 
 
 -- ------------------------------------------------------------------------------
@@ -143,3 +145,5 @@ EXECUTE FUNCTION public.hockey_prevent_double_active_rental();
 COMMENT ON COLUMN public.hockey_rental_items.added_at IS 'Datum, an dem das Teil zum Verleih hinzugefügt wurde';
 COMMENT ON COLUMN public.hockey_rental_items.returned_at IS 'Datum der Rückgabe dieses Teils (NULL = noch aktiv im Verleih)';
 COMMENT ON COLUMN public.hockey_rental_items.exchange_note IS 'Notiz zu Austausch- oder Teilrückgabevorgängen (z.B. Ersatz für E-003)';
+
+COMMIT;
