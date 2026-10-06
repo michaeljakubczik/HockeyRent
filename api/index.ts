@@ -266,7 +266,7 @@ export async function createApp(options: { supabase?: any; password?: string } =
           *,
           hockey_rental_items(
             *,
-            hockey_equipment_items(*)
+            hockey_equipment_items(id,item_code,category,category_label,size,brand,condition_note,status,created_at,is_deleted)
           )
         `)
         .order('rented_at', { ascending: false }).order('id', { ascending:false }));
@@ -288,7 +288,7 @@ export async function createApp(options: { supabase?: any; password?: string } =
       if (missingItemIds.size > 0) {
         const eqData = await loadAll(() => supabase
           .from('hockey_equipment_items')
-          .select('*')
+          .select('id,item_code,category,category_label,size,brand,condition_note,status,created_at,is_deleted')
           .in('id', Array.from(missingItemIds)).order('id'));
         if (eqData) {
           eqData.forEach((eq: any) => {

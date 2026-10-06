@@ -42,6 +42,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
+import { hydrateRentalImages } from './rentalImages';
 
 const API_BASE = '/api';
 
@@ -484,10 +485,12 @@ export default function App() {
         if(itemsRes.status===401 || historyRes.status===401) { setIsLoggedIn(false); sessionStorage.removeItem('hockey_rent_session'); }
         throw new Error('Daten konnten nicht aktualisiert werden. Bitte erneut laden.');
       }
-      const [nextItems,nextHistory]=await Promise.all([itemsRes.json(),historyRes.json()]);
+      const [nextItems,historyData]=await Promise.all([itemsRes.json(),historyRes.json()]);
+      const nextHistory=hydrateRentalImages(historyData,nextItems);
       if(generation!==fetchGeneration.current) return false;
       setItems(nextItems);
       setHistory(nextHistory);
+      setError(null);
       setEditingBundleRental(prev=>prev ? nextHistory.find((r:Rental)=>r.id===prev.id && !r.returned_at) || null : null);
       return true;
     } catch(err) {
