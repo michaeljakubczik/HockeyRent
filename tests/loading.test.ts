@@ -11,12 +11,13 @@ test('authenticated inventory/history load transfers large photos only in invent
   const rental = { id: 11, renter_name: 'Dummy', returned_at: null,
     hockey_rental_items: [{ id: 1, item_id: 1, rental_id: 11, returned_at: null }] };
   const supabase = {
-    rpc: async () => ({ data: true, error: null }),
+    rpc: async (name: string) => ({ data: name === 'hockey_inventory_read' ? [item] : true, error: null }),
     from: (table: string) => {
       let selection = '';
       const builder = {
         select: (value: string) => { selection = value; return builder; },
         eq: () => builder,
+        in: () => builder,
         order: () => builder,
         range: async () => {
           if (table === 'hockey_equipment_items') return { data: [item], error: null };

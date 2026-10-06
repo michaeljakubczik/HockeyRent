@@ -13,6 +13,7 @@ export async function database() {
  await db.exec(`alter table hockey_rental_contracts add column contract_snapshot jsonb,add column contract_version text,add column pdf_path text,add column signing_token_hash text,add column signing_token_expires_at timestamptz;`);
  await db.exec(readFileSync('supabase/migrations/20261006075151_integrity_and_contracts.sql','utf8'));
  await db.exec(readFileSync('supabase/migrations/20261006103140_contract_mail_outbox.sql','utf8'));
+ await db.exec(readFileSync('supabase/migrations/20261006130528_history_summary.sql','utf8'));
  return db;
 }
 export async function mutate(db:PGlite,action:string,data:any) {

@@ -18,6 +18,7 @@ test('API login, paid/open, details, returns and complete admin/public contract 
   try {
    let data:any;
    if(name==='hockey_mutate_rental') data=await mutate(db,args.p_action,args.p_data);
+   else if(name==='hockey_history_summary') data=(await db.query<any>('select hockey_history_summary() result')).rows[0].result;
    else if(name==='hockey_contract_write') data=await contract(db,args.p_action,args.p_id,args.p_data,args.p_token,args.p_review_hash,args.p_template);
    else if(name==='hockey_contract_mail') data=(await db.query<any>('select hockey_contract_mail($1,$2,$3,$4,$5::jsonb) result',
      [args.p_action,args.p_rental,args.p_job??null,args.p_token??null,JSON.stringify(args.p_data??{})])).rows[0].result;

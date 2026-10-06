@@ -168,44 +168,7 @@ export async function createApp(options: { supabase?: any; password?: string; ma
 
   app.get("/api/items", authHeader, async (req, res) => {
     try {
-      const supabase = getSupabase();
-      const data = await loadAll(() => supabase
-        .from('hockey_equipment_items')
-        .select(`
-          *,
-          hockey_rental_items(
-            id, returned_at,
-            hockey_rentals(id, renter_name, rented_at, returned_at, paid)
-          )
-        `)
-        .eq('is_deleted', false)
-        .order('id', { ascending: false }));
-
-
-
-      const transformed = data.map((item: any) => {
-        const rentalItemsList = (item.hockey_rental_items || item.rental_items) || [];
-        const activeRentalItem = rentalItemsList.find(
-          (ri: any) => (ri.hockey_rentals || ri.rentals) && !(ri.hockey_rentals || ri.rentals).returned_at && !ri.returned_at
-        );
-        const activeRental = activeRentalItem?.hockey_rentals || activeRentalItem?.rentals;
-        
-        // Verleihcounter pro Equipment: Wie oft wurde dieses konkrete Equipment bereits verliehen?
-        // Berechnet aus den vorhandenen historischen Daten in hockey_rental_items
-        const rentalCount = rentalItemsList.length;
-
-        return {
-          ...item,
-          rental_items: rentalItemsList,
-          rental_count: rentalCount,
-          active_rental_id: activeRental?.id || null,
-          verliehenAn: activeRental?.renter_name || null,
-          verliehenAm: activeRental?.rented_at || null,
-          bezahlt: activeRental?.paid || false
-        };
-      });
-
-      res.json(transformed);
+      res.json(await rpc('hockey_inventory_read', {}));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -255,7 +218,9 @@ export async function createApp(options: { supabase?: any; password?: string; ma
   }));
   const payment=run(async(req,res)=>{
     if(typeof req.body.paid!=='boolean') throw new HttpError(400,'Ungültiger Zahlungsstatus');
-    res.json(await mutate('payment',{id:positiveId(req.params.id),paid:req.body.paid}));
+    const result = await mutate('payment',{id:positiveId(req.params.id),paid:req.body.paid});
+    const summary = await rpc('hockey_history_summary', {}).catch(() => null);
+    res.json({ ...result, summary });
   });
   app.post('/api/rentals/:id/payment-status',authHeader,payment);
   app.patch('/api/rentals/:id/paid',authHeader,payment);
@@ -263,16 +228,31 @@ export async function createApp(options: { supabase?: any; password?: string; ma
   app.get("/api/history", authHeader, async (req, res) => {
     try {
       const supabase = getSupabase();
-      const data = await loadAll(() => supabase
-        .from('hockey_rentals')
-        .select(`
-          *,
-          hockey_rental_items(
-            *,
-            hockey_equipment_items(id,item_code,category,category_label,size,brand,condition_note,status,created_at,is_deleted)
+      const paginated = req.query.page !== undefined;
+      const requestedPage = paginated ? Number(req.query.page) : 1;
+      if (!Number.isSafeInteger(requestedPage) || requestedPage < 1 || requestedPage > 1000000) {
+        return res.status(400).json({ error: 'Ungültige Historienseite.' });
+      }
+      const pageSize = 25;
+      const summary = paginated ? await rpc('hockey_history_summary', {}) : null;
+      const page = Math.min(requestedPage, Math.max(1, Math.ceil((summary?.completedCount || 0) / pageSize)));
+      const query = () => supabase.from('hockey_rentals').select(`
+          *, hockey_rental_items(
+            *, hockey_equipment_items(id,item_code,category,category_label,size,brand,condition_note,status,created_at,is_deleted)
           )
-        `)
-        .order('rented_at', { ascending: false }).order('id', { ascending:false }));
+        `).order('rented_at', { ascending: false }).order('id', { ascending: false });
+      let data: any[];
+      if (paginated) {
+        const [active, completed] = await Promise.all([
+          loadAll(() => query().is('returned_at', null)),
+          query().not('returned_at', 'is', null).range((page - 1) * pageSize, page * pageSize - 1)
+        ]);
+        if (completed.error) throw new HttpError(503, 'Historie konnte nicht geladen werden.');
+        data = [...active, ...(completed.data || [])];
+      } else {
+        // Retain the array response for older clients while deployments roll over.
+        data = await loadAll(query);
+      }
 
 
 
@@ -302,8 +282,9 @@ export async function createApp(options: { supabase?: any; password?: string; ma
 
       // Verträge laden, um in der Verleihliste den Status anzuzeigen
       const contractsMap: Record<number, any> = {};
-      const contractsData = await loadAll(() => supabase.from('hockey_rental_contracts')
-        .select('id, rental_id, status, signed_at, signer_name, pdf_path, updated_at, created_at, first_name, last_name, child_name').order('id'));
+      const contractsData = data.length ? await loadAll(() => supabase.from('hockey_rental_contracts')
+        .select('id, rental_id, status, signed_at, signer_name, pdf_path, updated_at, created_at, first_name, last_name, child_name')
+        .in('rental_id', data.map(r => r.id)).order('id')) : [];
       for(const c of contractsData) contractsMap[c.rental_id]=c;
 
       const transformed = data.map((rental: any) => {
@@ -343,7 +324,7 @@ export async function createApp(options: { supabase?: any; password?: string; ma
         };
       });
 
-      res.json(transformed);
+      res.json(paginated ? { rentals: transformed, summary, page, pageSize } : transformed);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

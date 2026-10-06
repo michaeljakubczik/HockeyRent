@@ -42,6 +42,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { EquipmentItem, View, Rental, EquipmentCategory, RentalContract, ContractEquipmentSnapshotItem } from './types';
 import { CONTRACT_SECTIONS, CONTRACT_CONFIRMATION, CONTRACT_META, VEREIN_INFO } from './contractTemplate';
+import { compressEquipmentPhoto } from './equipmentPhoto';
 import { hydrateRentalImages } from './rentalImages';
 import { useButtonSound, SoundToggle } from './components/ButtonSound';
 import { ContractDeliveryStatus } from './components/ContractDeliveryStatus';
@@ -200,6 +201,10 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [items, setItems] = useState<EquipmentItem[]>([]);
   const [history, setHistory] = useState<Rental[]>([]);
+  const [historySummary, setHistorySummary] = useState({ activeCount: 0, completedCount: 0, paidRevenue: 0 });
+  const [completedPage, setCompletedPage] = useState(1);
+  const [photoProcessing, setPhotoProcessing] = useState(false);
+  const photoGeneration = useRef(0);
   const [publicItems, setPublicItems] = useState<Partial<EquipmentItem>[]>([]);
   const [bag, setBag] = useState<EquipmentItem[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<{
@@ -332,6 +337,10 @@ export default function App() {
   });
 
   const [editItem, setEditItem] = useState<EquipmentItem | null>(null);
+  useEffect(() => {
+    ++photoGeneration.current;
+    setPhotoProcessing(false);
+  }, [currentView, editItem?.id]);
 
   // Standard-Leihgebühr: numerischer Initialwert 60, editierbar. Standard-Laufzeit: 6 Kalendermonate
   const [rentForm, setRentForm] = useState<{
@@ -454,23 +463,26 @@ export default function App() {
     }
   };
 
-  const fetchItems = async (pass: string): Promise<boolean> => {
+  const fetchItems = async (pass: string, page = completedPage): Promise<boolean> => {
     const generation=++fetchGeneration.current;
     setLoading(true);
     try {
+      const pageOnly = page !== completedPage;
       const [itemsRes, historyRes]=await Promise.all([
-        fetch(`${API_BASE}/items`,{headers:{'x-admin-password':pass}}),
-        fetch(`${API_BASE}/history`,{headers:{'x-admin-password':pass}})
+        pageOnly ? null : fetch(`${API_BASE}/items`,{headers:{'x-admin-password':pass}}),
+        fetch(`${API_BASE}/history?page=${page}`,{headers:{'x-admin-password':pass}})
       ]);
-      if(!itemsRes.ok || !historyRes.ok) {
-        if(itemsRes.status===401 || historyRes.status===401) { setIsLoggedIn(false); sessionStorage.removeItem('hockey_rent_session'); }
+      if((itemsRes && !itemsRes.ok) || !historyRes.ok) {
+        if(itemsRes?.status===401 || historyRes.status===401) { setIsLoggedIn(false); sessionStorage.removeItem('hockey_rent_session'); }
         throw new Error('Daten konnten nicht aktualisiert werden. Bitte erneut laden.');
       }
-      const [nextItems,historyData]=await Promise.all([itemsRes.json(),historyRes.json()]);
-      const nextHistory=hydrateRentalImages(historyData,nextItems);
+      const [nextItems,historyData]=await Promise.all([itemsRes ? itemsRes.json() : items,historyRes.json()]);
+      const nextHistory=hydrateRentalImages(historyData.rentals,nextItems);
       if(generation!==fetchGeneration.current) return false;
       setItems(nextItems);
       setHistory(nextHistory);
+      setHistorySummary(historyData.summary);
+      setCompletedPage(historyData.page);
       setError(null);
       setEditingBundleRental(prev=>prev ? nextHistory.find((r:Rental)=>r.id===prev.id && !r.returned_at) || null : null);
       return true;
@@ -482,6 +494,7 @@ export default function App() {
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (photoProcessing) return;
     if (!newItem.category || !newItem.size || !newItem.brand) {
       setError('Bitte Kategorie, Marke und Größe ausfüllen.');
       return;
@@ -515,7 +528,7 @@ export default function App() {
 
   const handleEditItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editItem) return;
+    if (!editItem || photoProcessing) return;
     setLoading(true);
     setError(null);
     const category_label = CATEGORIES.find(c => c.value === editItem.category)?.label || editItem.category;
@@ -994,7 +1007,7 @@ export default function App() {
 
   const handleDeleteItem = (id: number) => {
     const item = items.find(i => i.id === id);
-    const hasHistory = item && item.rental_items && item.rental_items.length > 0;
+    const hasHistory = (item?.rental_count || 0) > 0;
     setConfirmDelete({
       type: 'item',
       id,
@@ -1111,6 +1124,8 @@ export default function App() {
       if (!data.success || data.paid !== paid) throw new Error('Zahlungsstatus wurde nicht bestätigt');
       setItems(prev=>prev.map(item=>item.active_rental_id===rentalId ? {...item,bezahlt:paid} : item));
       setEditingBundleRental(prev=>prev?.id===rentalId ? {...prev,paid} : prev);
+      if (data.summary) setHistorySummary(data.summary);
+      else if (previousRental && previousPaid !== paid) setHistorySummary(prev => ({ ...prev, paidRevenue: Number(prev.paidRevenue) + (paid ? 1 : -1) * Number(previousRental.fee_total) }));
       actionHaptic('success');
       setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
       window.setTimeout(() => setSuccess(null), 1800);
@@ -1129,47 +1144,30 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    ++fetchGeneration.current;
+    ++photoGeneration.current;
     setIsLoggedIn(false);
     setPassword('');
     sessionStorage.removeItem('hockey_rent_session');
     fetchPublicItems();
   };
 
-  const resizeImage = (base64Str: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.src = base64Str;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 800;
-        let width = img.width;
-        let height = img.height;
-        if (width > MAX_WIDTH) {
-          height *= MAX_WIDTH / width;
-          width = MAX_WIDTH;
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.7));
-      };
-    });
-  };
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const resized = await resizeImage(reader.result as string);
-        if (editItem) {
-          setEditItem({ ...editItem, image: resized });
-        } else {
-          setNewItem({ ...newItem, image: resized });
-        }
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+    const generation = ++photoGeneration.current;
+    const targetId = editItem?.id;
+    setPhotoProcessing(true);
+    setError(null);
+    try {
+      const image = await compressEquipmentPhoto(file);
+      if (generation !== photoGeneration.current) return;
+      if (targetId) setEditItem(prev => prev?.id === targetId ? { ...prev, image } : prev);
+      else setNewItem(prev => ({ ...prev, image }));
+    } catch (err) {
+      if (generation === photoGeneration.current) setError(err instanceof Error ? err.message : 'Foto konnte nicht geladen werden.');
+    } finally {
+      if (generation === photoGeneration.current) setPhotoProcessing(false);
     }
   };
 
@@ -1243,7 +1241,7 @@ export default function App() {
                   <div className="aspect-[4/3] bg-[#181B24] relative overflow-hidden flex-shrink-0">
                     {item.image ? (
                       <img 
-                        src={item.image} 
+                        loading="lazy" decoding="async" src={item.image}
                         alt={item.brand} 
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         referrerPolicy="no-referrer"
@@ -1758,7 +1756,7 @@ export default function App() {
                       <div key={item.id} className="bg-[#252936] p-4 rounded-2xl border border-slate-700/60 shadow-md flex items-center gap-4">
                         <div className="w-16 h-16 rounded-xl bg-[#181B24] border border-slate-700/80 overflow-hidden flex-shrink-0">
                           {item.image ? (
-                            <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img loading="lazy" decoding="async" src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-slate-600">
                               <ImageIcon className="w-6 h-6" />
@@ -1892,7 +1890,7 @@ export default function App() {
                 <div className="bg-[#252936] border border-slate-700/60 px-4 py-2.5 rounded-2xl shadow-md flex items-center gap-3 self-start md:self-auto">
                   <span className="text-slate-400 text-xs sm:text-sm font-bold uppercase tracking-wider">Einnahmen:</span>
                   <span className="text-emerald-400 font-black text-lg">
-                    {history.filter(r => r.paid).reduce((sum, r) => sum + r.fee_total, 0).toFixed(2)} €
+                    {Number(historySummary.paidRevenue).toFixed(2)} €
                   </span>
                 </div>
               </div>
@@ -1929,7 +1927,7 @@ export default function App() {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
                     rentalsSubTab === 'completed' ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
                   }`}>
-                    {completedRentals.length}
+                    {historySummary.completedCount}
                   </span>
                 </button>
               </div>
@@ -1982,6 +1980,15 @@ export default function App() {
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />
                     ))
+                  )}
+                  {historySummary.completedCount > 25 && (
+                    <div className="flex items-center justify-between gap-2 pt-3">
+                      <button type="button" disabled={loading || completedPage <= 1} onClick={() => void fetchItems(password, completedPage - 1)}
+                        className="p-3 rounded-xl border border-slate-700 disabled:opacity-40 hover:bg-slate-800" aria-label="Vorherige Historienseite"><ChevronLeft className="w-5 h-5" /></button>
+                      <span className="text-xs text-slate-400" role="status">Seite {completedPage} von {Math.max(1, Math.ceil(historySummary.completedCount / 25))}</span>
+                      <button type="button" disabled={loading || completedPage >= Math.ceil(historySummary.completedCount / 25)} onClick={() => void fetchItems(password, completedPage + 1)}
+                        className="p-3 rounded-xl border border-slate-700 disabled:opacity-40 hover:bg-slate-800" aria-label="Nächste Historienseite"><ChevronRight className="w-5 h-5" /></button>
+                    </div>
                   )}
                 </div>
               )}
@@ -2120,10 +2127,10 @@ export default function App() {
                       <div className="pt-2">
                         <button
                           type="submit"
-                          disabled={loading}
+                          disabled={loading || photoProcessing}
                           className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-4 rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
                         >
-                          {loading ? 'Speichert...' : (
+                          {photoProcessing ? 'Foto wird vorbereitet...' : loading ? 'Speichert...' : (
                             <>
                               <Save className="w-5 h-5 text-emerald-300" />
                               <span>{editItem ? 'Änderungen speichern' : 'Equipment hinzufügen'}</span>
@@ -2453,7 +2460,7 @@ const ItemCard: React.FC<ItemCardProps> = ({
       <div className="aspect-square bg-[#181B24] relative overflow-hidden flex-shrink-0">
         {item.image ? (
           <img 
-            src={item.image} 
+            loading="lazy" decoding="async" src={item.image}
             alt={item.brand} 
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
             referrerPolicy="no-referrer"
@@ -2857,7 +2864,7 @@ const ActiveRentalCard: React.FC<ActiveRentalCardProps> = ({
                   <div key={item.id} className="bg-[#181B24] h-[104px] rounded-xl border border-slate-700/60 p-2.5 flex items-stretch gap-3 overflow-hidden">
                     <div className="w-[82px] h-full rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
                       {item.image ? (
-                        <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" />
+                        <img loading="lazy" decoding="async" src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-slate-600">
                           <Package className="w-6 h-6" />
@@ -3063,7 +3070,7 @@ const CompletedRentalCard: React.FC<CompletedRentalCardProps> = ({
             {allItems.map((item, index) => (
               <div key={item.id || index} className="bg-[#181B24] h-[88px] rounded-xl border border-slate-700/60 p-2 flex items-center gap-3 overflow-hidden">
                 <div className="w-[68px] h-[68px] rounded-lg overflow-hidden bg-[#252936] border border-slate-600/70 flex-shrink-0 p-1">
-                  {item.image ? <img src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-slate-600"><Package className="w-5 h-5" /></div>}
+                  {item.image ? <img loading="lazy" decoding="async" src={item.image} alt={item.brand} className="w-full h-full rounded-md object-cover" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-slate-600"><Package className="w-5 h-5" /></div>}
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-white leading-tight whitespace-normal break-words">{item.category_label}</p>
@@ -3311,7 +3318,7 @@ const BundleEditorModal: React.FC<BundleEditorModalProps> = ({
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#252936] border border-slate-700 flex-shrink-0 flex items-center justify-center">
                           {item.image ? (
-                            <img src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img loading="lazy" decoding="async" src={item.image} alt={item.brand} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                           ) : (
                             <Package className="w-4 h-4 text-slate-600" />
                           )}
