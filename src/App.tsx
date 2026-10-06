@@ -4664,47 +4664,48 @@ const ContractModal: React.FC<ContractModalProps> = ({
               </div>
 
               {/* ACTION BUTTONS (FORM) */}
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+              <div className="border-t border-slate-700/60 pt-4 space-y-3">
                 <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-5 py-3 rounded-xl bg-[#181B24] text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                  type="submit"
+                  disabled={saving}
+                  className="w-full min-h-12 px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  Schließen
+                  <PenTool className="w-4 h-4 shrink-0" />
+                  <span>{saving ? 'Speichert...' : 'Weiter zur Unterschrift'}</span>
                 </button>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
+                    disabled={saving}
                     onClick={async () => {
                       const saved = await handleSaveContract(undefined, 'stay');
                       if (saved) setShowShareModal(true);
                     }}
-                    className="px-4 py-3 rounded-xl bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/40 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+                    className="min-h-12 px-3 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                     title="Vertrag speichern und Link zum Unterschreiben für Entleiher teilen"
                   >
-                    <Share2 className="w-4 h-4" />
-                    <span>Link zum Unterschreiben</span>
+                    <Share2 className="hidden sm:block w-4 h-4 shrink-0" />
+                    <span>Unterschriftslink</span>
                   </button>
 
                   <button
                     type="button"
                     disabled={saving}
                     onClick={() => handleSaveContract(undefined, 'stay')}
-                    className="px-4 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                    className="min-h-12 px-3 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
-                    {saving ? 'Speichert...' : 'Als Entwurf speichern'}
-                  </button>
-
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
-                  >
-                    <Eye className="w-4 h-4" />
-                    <span>{saving ? 'Speichert...' : 'Weiter zur Unterschrift'}</span>
+                    <Save className="hidden sm:block w-4 h-4 shrink-0" />
+                    <span>{saving ? 'Speichert...' : 'Entwurf speichern'}</span>
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="w-full min-h-11 px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/50 text-xs font-medium transition-all cursor-pointer"
+                >
+                  Schließen
+                </button>
               </div>
             </form>
           ) : (
@@ -5025,13 +5026,13 @@ const ContractModal: React.FC<ContractModalProps> = ({
               </div>
 
               {/* ACTION BUTTONS (PREVIEW) */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <div className="border-t border-slate-700/60 pt-4 space-y-3">
                 {isSigned ? (
                   <>
                     <button
                       type="button"
                       onClick={handleDownloadSignedPdf}
-                      className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md"
+                      className="w-full min-h-12 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Download className="w-4 h-4" />
                       <span>PDF herunterladen / öffnen</span>
@@ -5040,47 +5041,50 @@ const ContractModal: React.FC<ContractModalProps> = ({
                     <button
                       type="button"
                       onClick={onClose}
-                      className="px-6 py-3 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                      className="w-full min-h-11 px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/50 text-xs font-medium transition-all cursor-pointer"
                     >
                       Schließen
                     </button>
                   </>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="space-y-3">
                     <button
                       type="button"
                       onClick={handleStartSignFlow}
                       disabled={saving || isSigningSubmitting}
-                      className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                      className="w-full min-h-12 px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       title="Vertrag direkt auf diesem Gerät unterschreiben"
                     >
                       <PenTool className="w-4 h-4" />
                       <span>Auf diesem Gerät unterschreiben</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setShowShareModal(true)}
-                      className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-md cursor-pointer"
-                      title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
-                    >
-                      <Share2 className="w-4 h-4" />
-                      <span>Link zum Unterschreiben</span>
-                    </button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowShareModal(true)}
+                        disabled={saving || isSigningSubmitting}
+                        className="min-h-12 px-3 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Sicheren individuellen Link zum Unterschreiben für Entleiher erzeugen und teilen"
+                      >
+                        <Share2 className="hidden sm:block w-4 h-4 shrink-0" />
+                        <span>Unterschriftslink</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setMode('form')}
-                      className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
-                    >
-                      <Edit className="w-4 h-4" />
-                      <span>Daten bearbeiten</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setMode('form')}
+                        className="min-h-12 px-3 py-3 rounded-xl bg-[#252936] hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Edit className="hidden sm:block w-4 h-4 shrink-0" />
+                        <span>Daten bearbeiten</span>
+                      </button>
+                    </div>
 
                     <button
                       type="button"
                       onClick={onClose}
-                      className="px-4 py-2.5 rounded-xl bg-[#181B24] hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 text-xs font-bold transition-all cursor-pointer"
+                      className="w-full min-h-11 px-4 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/50 text-xs font-medium transition-all cursor-pointer"
                     >
                       Schließen
                     </button>
