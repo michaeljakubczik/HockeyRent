@@ -1,6 +1,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import { HttpError, positiveId, money, date, text, contractFields, validateSignature } from "../server/validation.js";
 import { createClient } from "@supabase/supabase-js";
 import { generateContractPdf } from "../src/pdfGenerator.js";
 import { createContractSnapshot, CURRENT_CONTRACT_VERSION } from "../src/contractTemplate.js";
@@ -9,7 +10,7 @@ dotenv.config();
 
 let supabaseClient: any = null;
 
-const getSupabase = () => {
+const getConfiguredSupabase = () => {
   if (supabaseClient) return supabaseClient;
   const supabaseUrl = process.env.SUPABASE_URL || "";
   const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -69,52 +70,93 @@ export function calculateSixMonthsDueDate(startDateStr: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-async function startServer() {
+export async function createApp(options: { supabase?: any; password?: string } = {}) {
+  const getSupabase = () => options.supabase || getConfiguredSupabase();
   const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: '10mb' }));
 
   const getEnvPassword = () => {
-    const pass = process.env.ADMIN_PASSWORD;
+    const pass = options.password || process.env.ADMIN_PASSWORD;
     if (!pass || pass.trim() === "") {
       console.error("CRITICAL: ADMIN_PASSWORD is not set in environment variables.");
-      process.exit(1); // Fail to start as requested
+      throw new Error("ADMIN_PASSWORD fehlt.");
     }
     return pass;
   };
 
   const adminPassword = getEnvPassword();
 
-  const authHeader = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const password = req.headers["x-admin-password"];
-    if (password === adminPassword) {
-      next();
-    } else {
-      res.status(401).json({ success: false, message: "Nicht autorisiert" });
-    }
+  const tokenSecret = process.env.SESSION_SECRET || adminPassword;
+  const issueSession = () => {
+    const payload = Buffer.from(JSON.stringify({ expires: Date.now() + 12 * 3600000, nonce: crypto.randomBytes(16).toString('hex') })).toString('base64url');
+    return payload + '.' + crypto.createHmac('sha256', tokenSecret).update(payload).digest('base64url');
   };
-
-  app.post("/api/login", (req, res) => {
-    const { password } = req.body;
-    if (password === adminPassword) {
-      res.json({ success: true });
-    } else {
-      res.status(401).json({ success: false, message: "Ungültiges Passwort" });
+  const validSession = (token: unknown) => {
+    if (typeof token !== 'string' || token.length > 1000) return false;
+    const [payload, signature] = token.split('.');
+    if (!payload || !signature) return false;
+    const expected = crypto.createHmac('sha256', tokenSecret).update(payload).digest('base64url');
+    if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected))) return false;
+    try { return JSON.parse(Buffer.from(payload,'base64url').toString()).expires > Date.now(); } catch { return false; }
+  };
+  const authHeader: express.RequestHandler = (req,res,next) => {
+    if (validSession(req.headers['x-admin-password'])) next();
+    else res.status(401).json({ success:false,message:'Sitzung abgelaufen. Bitte erneut anmelden.' });
+  };
+  const run = (fn: (req: express.Request,res: express.Response) => Promise<any>): express.RequestHandler => (req,res,next) => { Promise.resolve(fn(req,res)).catch(next); };
+  async function rpc(name: string, args: any) {
+    const {data,error} = await getSupabase().rpc(name,args);
+    if (error) {
+      console.error(`[Database ${name}]`, error.code);
+      if (error.code === 'P0002') throw new HttpError(404,error.message);
+      if (['P0001','23505','23514','22P02','22007','22008'].includes(error.code)) throw new HttpError(409,error.message);
+      throw new HttpError(503,'Datenbankzugriff fehlgeschlagen. Bitte erneut versuchen.');
     }
+    return data;
+  }
+  app.use('/api', (req,res,next) => { res.setHeader('Cache-Control','no-store'); next(); });
+  const rateLimit = (scope: string,limit: number): express.RequestHandler => run(async (req,res) => {
+    const ip = req.get('x-forwarded-for')?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+    const key = crypto.createHmac('sha256',tokenSecret).update(scope+':'+ip).digest('hex');
+    if (!await rpc('hockey_rate_limit',{p_key:key,p_limit:limit,p_window:60})) throw new HttpError(429,'Zu viele Anfragen. Bitte später erneut versuchen.');
+    // Middleware continues through the explicit next handler supplied below.
+    (res.locals.rateNext as express.NextFunction)();
   });
+  const limit = (scope: string,n: number): express.RequestHandler => (req,res,next) => {
+    res.locals.rateNext=next; rateLimit(scope,n)(req,res,next);
+  };
+  app.post('/api/login',limit('login',10),run(async(req,res)=>{
+    const password=req.body.password;
+    const supplied=typeof password==='string' ? Buffer.from(password) : Buffer.alloc(0);
+    const expected=Buffer.from(adminPassword);
+    if (supplied.length!==expected.length || !crypto.timingSafeEqual(supplied,expected)) throw new HttpError(401,'Ungültiges Passwort');
+    res.json({success:true,token:issueSession()});
+  }));
+  app.get('/api/session',authHeader,(_req,res)=>res.json({success:true}));
+  app.use('/api/public/contract',limit('contract',60));
 
+  async function loadAll(query: () => any) {
+    const rows: any[]=[];
+    for(let offset=0;;offset+=500) {
+      const {data,error}=await query().range(offset,offset+499);
+      if(error) throw new HttpError(503,'Daten konnten nicht geladen werden.');
+      rows.push(...data);
+      if(data.length<500) return rows;
+    }
+  }
   app.get("/api/public/available", async (req, res) => {
     try {
       const supabase = getSupabase();
-      const { data, error } = await supabase
+      const data = await loadAll(() => supabase
         .from('hockey_equipment_items')
         .select('id, item_code, category, category_label, size, brand, image')
         .eq('status', 'verfügbar')
         .eq('is_deleted', false)
-        .order('category', { ascending: true });
+        .order('category', { ascending: true }).order('id'));
       
-      if (error) return res.status(500).json({ error: error.message });
+
       res.json(data);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -124,18 +166,19 @@ async function startServer() {
   app.get("/api/items", authHeader, async (req, res) => {
     try {
       const supabase = getSupabase();
-      const { data, error } = await supabase
+      const data = await loadAll(() => supabase
         .from('hockey_equipment_items')
         .select(`
           *,
           hockey_rental_items(
-            hockey_rentals(*)
+            id, returned_at,
+            hockey_rentals(id, renter_name, rented_at, returned_at, paid)
           )
         `)
         .eq('is_deleted', false)
-        .order('id', { ascending: false });
+        .order('id', { ascending: false }));
 
-      if (error) return res.status(500).json({ error: error.message });
+
 
       const transformed = data.map((item: any) => {
         const rentalItemsList = (item.hockey_rental_items || item.rental_items) || [];
@@ -165,620 +208,59 @@ async function startServer() {
     }
   });
 
-  app.post("/api/items", authHeader, async (req, res) => {
-    try {
-      const supabase = getSupabase();
-      const { category, category_label, size, brand, image, condition_note } = req.body;
+  app.post('/api/items',authHeader,run(async(req,res)=>{
+    const category=text(req.body.category,'Kategorie');
+    if (!CATEGORY_PREFIXES[category]) throw new HttpError(400,'Unbekannte Kategorie');
+    res.json(await rpc('hockey_mutate_rental',{p_action:'create_item',p_data:{
+      category,category_label:category,brand:text(req.body.brand,'Marke'),size:text(req.body.size,'Größe'),
+      prefix:CATEGORY_PREFIXES[category],image:req.body.image || null,condition_note:req.body.condition_note || null
+    }}));
+  }));
 
-      if (!category || !size || !brand) {
-        return res.status(400).json({ success: false, message: "Kategorie, Größe und Marke sind erforderlich." });
-      }
+  app.patch('/api/items/:id',authHeader,run(async(req,res)=>{
+    const category=text(req.body.category,'Kategorie');
+    if(!CATEGORY_PREFIXES[category]) throw new HttpError(400,'Unbekannte Kategorie');
+    res.json(await rpc('hockey_mutate_rental',{p_action:'edit_item',p_data:{id:positiveId(req.params.id),category,
+      category_label:category,size:text(req.body.size,'Größe'),brand:text(req.body.brand,'Marke'),image:req.body.image||null,condition_note:req.body.condition_note||null}}));
+  }));
 
-      const prefix = CATEGORY_PREFIXES[category] || 'EQ';
-      
-      let item_code = '';
-      let nextNumber = 1;
-      let unique = false;
-      let attempts = 0;
-
-      while (!unique && attempts < 5) {
-        const { data: lastItems, error: fetchError } = await supabase
-          .from('hockey_equipment_items')
-          .select('item_code')
-          .ilike('item_code', `${prefix}-%`)
-          .order('item_code', { ascending: false })
-          .limit(1);
-
-        if (fetchError) throw fetchError;
-
-        if (lastItems && lastItems.length > 0 && lastItems[0].item_code) {
-          const lastCode = lastItems[0].item_code;
-          const parts = lastCode.split('-');
-          if (parts.length > 1) {
-            nextNumber = Math.max(nextNumber, parseInt(parts[1]) + 1);
-          }
-        }
-        
-        item_code = `${prefix}-${nextNumber.toString().padStart(3, '0')}`;
-        
-        const { count, error: countError } = await supabase
-          .from('hockey_equipment_items')
-          .select('id', { count: 'exact', head: true })
-          .eq('item_code', item_code);
-        
-        if (countError) throw countError;
-        
-        if (count === 0) {
-          unique = true;
-        } else {
-          nextNumber++;
-          attempts++;
-        }
-      }
-
-      if (!unique) {
-        return res.status(500).json({ success: false, message: "Konnte keinen eindeutigen Item-Code generieren." });
-      }
-
-      const { data, error } = await supabase
-        .from('hockey_equipment_items')
-        .insert([{ 
-          category, 
-          category_label, 
-          size, 
-          brand, 
-          item_code, 
-          image: image || null, 
-          condition_note: condition_note || null,
-          status: 'verfügbar',
-          is_deleted: false
-        }])
-        .select();
-
-      if (error) {
-        console.error(`[Item Creation Error]: ${error.message}`);
-        return res.status(400).json({ success: false, message: "Fehler beim Anlegen des Items." });
-      }
-
-      console.log(`[Item Created]: ${item_code} (${category_label})`);
-      res.json({ success: true, id: data[0].id, item_code });
-    } catch (err: any) {
-      console.error(`[Item Creation Exception]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Interner Serverfehler beim Anlegen des Items." });
-    }
+  const mutate = (action: string, data: any) => rpc('hockey_mutate_rental',{p_action:action,p_data:data});
+  app.post('/api/rentals',authHeader,run(async(req,res)=>{
+    const body=req.body;
+    if (!Array.isArray(body.item_ids) || !body.item_ids.length) throw new HttpError(400,'Keine Teile ausgewählt');
+    const ids=body.item_ids.map(positiveId);
+    if (new Set(ids).size!==ids.length) throw new HttpError(400,'Teile doppelt ausgewählt');
+    const data={...body,item_ids:ids,renter_name:text(body.renter_name,'Name'),fee_total:money(body.fee_total,0)};
+    if (body.rented_at) data.rented_at=date(body.rented_at);
+    if (body.due_date) data.due_date=date(body.due_date);
+    if (body.paid!==undefined && typeof body.paid!=='boolean') throw new HttpError(400,'Ungültiger Zahlungsstatus');
+    res.json(await mutate('create',data));
+  }));
+  app.post('/api/rentals/:id/return',authHeader,run(async(req,res)=>res.json(await mutate('return',{id:positiveId(req.params.id)}))));
+  app.post('/api/rentals/:id/items/:itemId/return',authHeader,run(async(req,res)=>res.json(await mutate('single_return',{id:positiveId(req.params.id),item_id:positiveId(req.params.itemId),note:req.body?.note}))));
+  app.post('/api/rentals/:id/exchange',authHeader,run(async(req,res)=>res.json(await mutate('exchange',{id:positiveId(req.params.id),return_item_id:positiveId(req.body.return_item_id),item_id:positiveId(req.body.new_item_id),note:req.body.note}))));
+  const addItem=run(async(req,res)=>res.json(await mutate('add',{id:positiveId(req.params.id),item_id:positiveId(req.body.item_id),note:req.body.note})));
+  app.post('/api/rentals/:id/items',authHeader,addItem);
+  app.post('/api/rentals/:id/add-item',authHeader,addItem);
+  app.patch('/api/rentals/:id',authHeader,run(async(req,res)=>{
+    const data: any={id:positiveId(req.params.id)};
+    if (req.body.renter_name!==undefined) data.renter_name=text(req.body.renter_name,'Name');
+    if (req.body.fee_total!==undefined) data.fee_total=money(req.body.fee_total);
+    if (req.body.note!==undefined) data.note=req.body.note===null ? null : text(req.body.note,'Notiz',false,2000);
+    if (req.body.due_date!==undefined) data.due_date=date(req.body.due_date);
+    res.json(await mutate('details',data));
+  }));
+  const payment=run(async(req,res)=>{
+    if(typeof req.body.paid!=='boolean') throw new HttpError(400,'Ungültiger Zahlungsstatus');
+    res.json(await mutate('payment',{id:positiveId(req.params.id),paid:req.body.paid}));
   });
-
-  app.patch("/api/items/:id", authHeader, async (req, res) => {
-    try {
-      const supabase = getSupabase();
-      const { id } = req.params;
-      const { category, category_label, size, brand, image, condition_note } = req.body;
-
-      const { error } = await supabase
-        .from('hockey_equipment_items')
-        .update({ 
-          category, 
-          category_label, 
-          size, 
-          brand, 
-          image, 
-          condition_note 
-        })
-        .eq('id', id);
-
-      if (error) throw error;
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error(`[Item Update Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Items." });
-    }
-  });
-
-// Saubere Berechnung: 6 Kalendermonate ab rented_at (inkl. Monatsende-Sonderfall)
-function calculateDueDate(startDateStr: string): string {
-  if (!startDateStr) return '';
-  const match = startDateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (match) {
-    const year = parseInt(match[1], 10);
-    const month = parseInt(match[2], 10); // 1-12
-    const day = parseInt(match[3], 10);
-    const totalMonths = month - 1 + 6;
-    const targetYear = year + Math.floor(totalMonths / 12);
-    const targetMonth = (totalMonths % 12) + 1; // 1-12
-    const daysInTargetMonth = new Date(targetYear, targetMonth, 0).getDate();
-    const targetDay = Math.min(day, daysInTargetMonth);
-    const yyyy = String(targetYear);
-    const mm = String(targetMonth).padStart(2, '0');
-    const dd = String(targetDay).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }
-  return '';
-}
-
-  app.post("/api/rentals", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    let rentalId: number | null = null;
-    
-    try {
-      const { renter_name, rented_at, paid, fee_total, note, item_ids, due_date } = req.body;
-      
-      if (!item_ids || !Array.isArray(item_ids) || item_ids.length === 0) {
-        return res.status(400).json({ success: false, message: "Keine Items ausgewählt" });
-      }
-
-      if (!renter_name) {
-        return res.status(400).json({ success: false, message: "Name des Ausleihers fehlt" });
-      }
-
-      const { data: items, error: checkError } = await supabase
-        .from('hockey_equipment_items')
-        .select('id, status, item_code')
-        .in('id', item_ids);
-
-      if (checkError) throw checkError;
-      
-      const unavailable = items?.filter((i: any) => i.status !== 'verfügbar');
-      if (unavailable && unavailable.length > 0) {
-        const codes = unavailable.map((i: any) => i.item_code).join(', ');
-        return res.status(400).json({ 
-          success: false, 
-          message: `Einige Items sind bereits verliehen: ${codes}` 
-        });
-      }
-
-      const rental_type = item_ids.length > 1 ? 'bundle' : 'single';
-      const today = rented_at || new Date().toISOString().split('T')[0];
-      const finalDueDate = due_date || calculateDueDate(today);
-
-      const rentalInsertData: any = {
-        renter_name,
-        rented_at: today,
-        due_date: finalDueDate || null,
-        paid: !!paid,
-        fee_total: parseFloat(fee_total) || 0,
-        note: note || null,
-        rental_type
-      };
-
-      const { data: rentalData, error: rentalError } = await supabase
-        .from('hockey_rentals')
-        .insert([rentalInsertData])
-        .select();
-
-      if (rentalError) throw rentalError;
-      if (!rentalData || rentalData.length === 0) {
-        throw new Error("Fehler beim Erstellen des Verleih-Datensatzes");
-      }
-      rentalId = rentalData[0].id;
-
-      const rentalItems = item_ids.map(itemId => ({
-        rental_id: rentalId,
-        item_id: itemId,
-        added_at: today
-      }));
-
-      const { error: riError } = await supabase
-        .from('hockey_rental_items')
-        .insert(rentalItems);
-
-      if (riError) {
-        await supabase.from('hockey_rentals').delete().eq('id', rentalId);
-        throw riError;
-      }
-
-      const { error: itemError } = await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verliehen' })
-        .in('id', item_ids);
-
-      if (itemError) {
-        await supabase.from('hockey_rental_items').delete().eq('rental_id', rentalId);
-        await supabase.from('hockey_rentals').delete().eq('id', rentalId);
-        throw itemError;
-      }
-      
-      console.log(`[Rental Created]: ID ${rentalId} for ${renter_name} (${item_ids.length} items)`);
-      res.json({ success: true, rentalId });
-    } catch (err: any) {
-      console.error(`[Rental Creation Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Erstellen des Verleihs." });
-    }
-  });
-
-  // Alles zurückgeben (Kompletter Verleihvorgang)
-  app.post("/api/rentals/:id/return", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    const { id } = req.params;
-
-    try {
-      const returned_at = new Date().toISOString().split('T')[0];
-
-      const { data: rental, error: rentalLookupError } = await supabase
-        .from('hockey_rentals')
-        .select('id, returned_at')
-        .eq('id', id)
-        .single();
-      if (rentalLookupError || !rental) {
-        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
-      }
-      if (rental.returned_at) {
-        return res.json({ success: true, returned_at: rental.returned_at, returned_count: 0, already_returned: true });
-      }
-
-      const { data: activeItems, error: riError } = await supabase
-        .from('hockey_rental_items')
-        .select('id, item_id')
-        .eq('rental_id', id)
-        .is('returned_at', null);
-      if (riError) throw riError;
-      if (!activeItems || activeItems.length === 0) {
-        return res.status(409).json({ success: false, message: "Keine aktiven Teile in diesem Verleih gefunden." });
-      }
-
-      const itemIds = activeItems.map((ri: any) => ri.item_id);
-
-      const { data: returnedRows, error: returnItemsError } = await supabase
-        .from('hockey_rental_items')
-        .update({ returned_at })
-        .eq('rental_id', id)
-        .is('returned_at', null)
-        .select('id, item_id, returned_at');
-      if (returnItemsError) throw returnItemsError;
-      if (!returnedRows || returnedRows.length !== activeItems.length) {
-        throw new Error(`Nicht alle Mietpositionen wurden zurückgegeben (${returnedRows?.length || 0}/${activeItems.length}).`);
-      }
-
-      const { data: completedRental, error: rentalError } = await supabase
-        .from('hockey_rentals')
-        .update({ returned_at })
-        .eq('id', id)
-        .is('returned_at', null)
-        .select('id, returned_at')
-        .single();
-      if (rentalError || !completedRental) throw rentalError || new Error("Verleih konnte nicht abgeschlossen werden.");
-
-      const { error: itemError } = await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verfügbar' })
-        .in('id', itemIds);
-      if (itemError) throw itemError;
-
-      console.log(`[Rental Returned]: ID ${id}, ${itemIds.length} items on ${returned_at}`);
-      res.json({ success: true, returned_at, returned_count: itemIds.length });
-    } catch (err: any) {
-      console.error(`[Rental Return Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: `Rückgabe fehlgeschlagen: ${err.message}` });
-    }
-  });
-
-  // Einzelnes Teil aus einem laufenden Bundle zurückgeben
-  app.post("/api/rentals/:id/items/:itemId/return", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    const { id, itemId } = req.params;
-    const { note } = req.body || {};
-    
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      
-      // 1. Verify rental is active
-      const { data: rental, error: rentalError } = await supabase
-        .from('hockey_rentals')
-        .select('id, returned_at')
-        .eq('id', id)
-        .single();
-
-      if (rentalError || !rental) {
-        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
-      }
-      if (rental.returned_at) {
-        return res.status(400).json({ success: false, message: "Dieser Verleihvorgang ist bereits abgeschlossen." });
-      }
-
-      // 2. Mark this item in hockey_rental_items as returned
-      const { error: riError } = await supabase
-        .from('hockey_rental_items')
-        .update({ 
-          returned_at: today,
-          exchange_note: note || 'Einzeln zurückgegeben'
-        })
-        .eq('rental_id', id)
-        .eq('item_id', itemId)
-        .is('returned_at', null);
-
-      if (riError) throw riError;
-
-      // 3. Mark the equipment item as available again
-      const { error: itemError } = await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verfügbar' })
-        .eq('id', itemId);
-
-      if (itemError) throw itemError;
-
-      // 4. Check if any active items remain in this rental; if none remain, mark rental returned
-      const { data: remainingItems, error: remError } = await supabase
-        .from('hockey_rental_items')
-        .select('id')
-        .eq('rental_id', id)
-        .is('returned_at', null);
-
-      if (remError) throw remError;
-
-      let rentalCompleted = false;
-      if (!remainingItems || remainingItems.length === 0) {
-        const { error: completeError } = await supabase
-          .from('hockey_rentals')
-          .update({ returned_at: today })
-          .eq('id', id);
-
-        if (completeError) throw completeError;
-        rentalCompleted = true;
-      }
-
-      console.log(`[Single Item Returned]: Item ${itemId} from Rental ${id} on ${today} (Rental completed: ${rentalCompleted})`);
-      res.json({ success: true, returned_at: today, rentalCompleted });
-    } catch (err: any) {
-      console.error(`[Single Return Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler bei der Teilrückgabe." });
-    }
-  });
-
-  // Teil gegen ein anderes austauschen
-  app.post("/api/rentals/:id/exchange", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    const { id } = req.params;
-    const { return_item_id, new_item_id, note } = req.body;
-
-    if (!return_item_id || !new_item_id) {
-      return res.status(400).json({ success: false, message: "Altes und neues Equipmentteil sind erforderlich." });
-    }
-
-    try {
-      const today = new Date().toISOString().split('T')[0];
-
-      // 1. Verify rental is active
-      const { data: rental, error: rentalError } = await supabase
-        .from('hockey_rentals')
-        .select('id, returned_at')
-        .eq('id', id)
-        .single();
-
-      if (rentalError || !rental) {
-        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
-      }
-      if (rental.returned_at) {
-        return res.status(400).json({ success: false, message: "Dieser Verleihvorgang ist bereits abgeschlossen." });
-      }
-
-      // 2. Fetch both equipment items for clean note description
-      const { data: itemsData, error: itemsError } = await supabase
-        .from('hockey_equipment_items')
-        .select('id, status, is_deleted, item_code, brand, size, category_label')
-        .in('id', [return_item_id, new_item_id]);
-
-      if (itemsError || !itemsData || itemsData.length < 2) {
-        return res.status(404).json({ success: false, message: "Ausrüstungsteile nicht gefunden." });
-      }
-
-      const returnItem = itemsData.find((i: any) => i.id === Number(return_item_id));
-      const newItem = itemsData.find((i: any) => i.id === Number(new_item_id));
-
-      if (!returnItem || !newItem) {
-        return res.status(404).json({ success: false, message: "Teile konnten nicht zugeordnet werden." });
-      }
-
-      if (newItem.status !== 'verfügbar' || newItem.is_deleted) {
-        return res.status(400).json({ success: false, message: `Ersatzteil ${newItem.item_code} ist aktuell nicht verfügbar.` });
-      }
-
-      const returnNote = note 
-        ? `${note} (Tausch gegen ${newItem.item_code})`
-        : `Tausch gegen ${newItem.item_code} (${newItem.brand} ${newItem.size})`;
-
-      const addNote = note 
-        ? `${note} (Ersatz für ${returnItem.item_code})`
-        : `Ersatz für ${returnItem.item_code} (${returnItem.brand} ${returnItem.size})`;
-
-      // 3. Mark old item as returned in hockey_rental_items
-      const { error: returnRiError } = await supabase
-        .from('hockey_rental_items')
-        .update({
-          returned_at: today,
-          exchange_note: returnNote
-        })
-        .eq('rental_id', id)
-        .eq('item_id', return_item_id)
-        .is('returned_at', null);
-
-      if (returnRiError) throw returnRiError;
-
-      // 4. Set old item status to 'verfügbar' in hockey_equipment_items
-      await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verfügbar' })
-        .eq('id', return_item_id);
-
-      // 5. Insert new item in hockey_rental_items
-      const { error: addRiError } = await supabase
-        .from('hockey_rental_items')
-        .insert([{
-          rental_id: id,
-          item_id: new_item_id,
-          added_at: today,
-          returned_at: null,
-          exchange_note: addNote
-        }]);
-
-      if (addRiError) throw addRiError;
-
-      // 6. Set new item status to 'verliehen' in hockey_equipment_items
-      await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verliehen' })
-        .eq('id', new_item_id);
-
-      console.log(`[Item Exchanged in Rental ${id}]: ${returnItem.item_code} -> ${newItem.item_code}`);
-      res.json({ success: true, message: `Teil ${returnItem.item_code} erfolgreich gegen ${newItem.item_code} getauscht.` });
-    } catch (err: any) {
-      console.error(`[Exchange Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Austauschen des Equipments." });
-    }
-  });
-
-  // Teil zu einem bestehenden laufenden Bundle hinzufügen
-  const handleAddItemToRental = async (req: any, res: any) => {
-    const supabase = getSupabase();
-    const { id } = req.params;
-    const { item_id, note } = req.body;
-
-    if (!item_id) {
-      return res.status(400).json({ success: false, message: "Kein Equipmentteil übergeben." });
-    }
-
-    try {
-      const today = new Date().toISOString().split('T')[0];
-
-      // 1. Verify rental is active
-      const { data: rental, error: rentalError } = await supabase
-        .from('hockey_rentals')
-        .select('id, returned_at')
-        .eq('id', id)
-        .single();
-
-      if (rentalError || !rental) {
-        return res.status(404).json({ success: false, message: "Verleihvorgang nicht gefunden." });
-      }
-      if (rental.returned_at) {
-        return res.status(400).json({ success: false, message: "Dieser Verleihvorgang ist bereits abgeschlossen." });
-      }
-
-      // 2. Verify item is available
-      const { data: item, error: itemError } = await supabase
-        .from('hockey_equipment_items')
-        .select('id, status, is_deleted, item_code')
-        .eq('id', item_id)
-        .single();
-
-      if (itemError || !item) {
-        return res.status(404).json({ success: false, message: "Ausrüstungsteil nicht gefunden." });
-      }
-      if (item.status !== 'verfügbar' || item.is_deleted) {
-        return res.status(400).json({ success: false, message: `Teil ${item.item_code} ist aktuell nicht verfügbar.` });
-      }
-
-      // 3. Insert into hockey_rental_items
-      const { error: riError } = await supabase
-        .from('hockey_rental_items')
-        .insert([{
-          rental_id: id,
-          item_id,
-          added_at: today,
-          returned_at: null,
-          exchange_note: note || null
-        }]);
-
-      if (riError) throw riError;
-
-      // 4. Update equipment item status to 'verliehen'
-      const { error: itemUpdateError } = await supabase
-        .from('hockey_equipment_items')
-        .update({ status: 'verliehen' })
-        .eq('id', item_id);
-
-      if (itemUpdateError) throw itemUpdateError;
-
-      console.log(`[Item Added to Rental]: Item ${item_id} added to Rental ${id}`);
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error(`[Add Item Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Hinzufügen des Teils." });
-    }
-  };
-
-  app.post("/api/rentals/:id/items", authHeader, handleAddItemToRental);
-  app.post("/api/rentals/:id/add-item", authHeader, handleAddItemToRental);
-
-  app.patch("/api/rentals/:id", authHeader, async (req, res) => {
-    try {
-      const { renter_name, fee_total, note, paid, due_date } = req.body;
-      const supabase = getSupabase();
-      const { id } = req.params;
-
-      const updates: any = {};
-      if (renter_name !== undefined) updates.renter_name = renter_name;
-      if (fee_total !== undefined) updates.fee_total = Number(fee_total);
-      if (note !== undefined) updates.note = note;
-      if (paid !== undefined) updates.paid = Boolean(paid);
-      if (due_date !== undefined) updates.due_date = due_date;
-
-      const { error } = await supabase
-        .from('hockey_rentals')
-        .update(updates)
-        .eq('id', id);
-
-      if (error) throw error;
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error(`[Rental Update Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren der Ausleihe." });
-    }
-  });
-
-  // Zahlungsstatus per POST: robuste Alternative für mobile/Preview-Clients.
-  app.post("/api/rentals/:id/payment-status", authHeader, async (req, res) => {
-    try {
-      const { paid } = req.body;
-      if (typeof paid !== "boolean") {
-        return res.status(400).json({ success: false, message: "Ungültiger Zahlungsstatus." });
-      }
-
-      const supabase = getSupabase();
-      const { id } = req.params;
-      const { data, error } = await supabase
-        .from('hockey_rentals')
-        .update({ paid })
-        .eq('id', id)
-        .select('id, paid')
-        .single();
-
-      if (error) throw error;
-      res.json({ success: true, paid: data.paid });
-    } catch (err: any) {
-      console.error(`[Rental Payment Status Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Zahlungsstatus." });
-    }
-  });
-
-  app.patch("/api/rentals/:id/paid", authHeader, async (req, res) => {
-    try {
-      const { paid } = req.body;
-      if (typeof paid !== "boolean") {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Ungültiger Wert für 'paid'. Es muss ein Boolean (true oder false) sein." 
-        });
-      }
-
-      const supabase = getSupabase();
-      const { id } = req.params;
-
-      const { error } = await supabase
-        .from('hockey_rentals')
-        .update({ paid })
-        .eq('id', id);
-
-      if (error) throw error;
-      res.json({ success: true, paid });
-    } catch (err: any) {
-      console.error(`[Rental Paid Update Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Zahlungsstatus." });
-    }
-  });
+  app.post('/api/rentals/:id/payment-status',authHeader,payment);
+  app.patch('/api/rentals/:id/paid',authHeader,payment);
 
   app.get("/api/history", authHeader, async (req, res) => {
     try {
       const supabase = getSupabase();
-      const { data, error } = await supabase
+      const data = await loadAll(() => supabase
         .from('hockey_rentals')
         .select(`
           *,
@@ -787,9 +269,9 @@ function calculateDueDate(startDateStr: string): string {
             hockey_equipment_items(*)
           )
         `)
-        .order('rented_at', { ascending: false });
+        .order('rented_at', { ascending: false }).order('id', { ascending:false }));
 
-      if (error) return res.status(500).json({ error: error.message });
+
 
       // Gather any item IDs where relation hockey_equipment_items might not have resolved directly
       const missingItemIds = new Set<number>();
@@ -804,10 +286,10 @@ function calculateDueDate(startDateStr: string): string {
 
       let itemsMap: Record<number, any> = {};
       if (missingItemIds.size > 0) {
-        const { data: eqData } = await supabase
+        const eqData = await loadAll(() => supabase
           .from('hockey_equipment_items')
           .select('*')
-          .in('id', Array.from(missingItemIds));
+          .in('id', Array.from(missingItemIds)).order('id'));
         if (eqData) {
           eqData.forEach((eq: any) => {
             itemsMap[eq.id] = eq;
@@ -816,19 +298,10 @@ function calculateDueDate(startDateStr: string): string {
       }
 
       // Verträge laden, um in der Verleihliste den Status anzuzeigen
-      let contractsMap: Record<number, any> = {};
-      try {
-        const { data: contractsData } = await supabase
-          .from('hockey_rental_contracts')
-          .select('id, rental_id, status, signed_at, signer_name, pdf_path, pdf_url, updated_at, created_at, first_name, last_name, child_name');
-        if (contractsData) {
-          contractsData.forEach((c: any) => {
-            contractsMap[c.rental_id] = c;
-          });
-        }
-      } catch (e) {
-        // Ignorieren falls nicht verfügbar
-      }
+      const contractsMap: Record<number, any> = {};
+      const contractsData = await loadAll(() => supabase.from('hockey_rental_contracts')
+        .select('id, rental_id, status, signed_at, signer_name, pdf_path, updated_at, created_at, first_name, last_name, child_name').order('id'));
+      for(const c of contractsData) contractsMap[c.rental_id]=c;
 
       const transformed = data.map((rental: any) => {
         const allRentalItems = (rental.hockey_rental_items || rental.rental_items) || [];
@@ -880,804 +353,78 @@ function calculateDueDate(startDateStr: string): string {
   // ==============================================================================
 
   // GET /api/rentals/:id/contract - Vertragsdaten zu einer Ausleihe laden
-  app.get("/api/rentals/:id/contract", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    const rentalId = Number(req.params.id);
-
-    try {
-      // 1. Ausleihe und aktuelle Ausrüstung prüfen
-      const { data: rental, error: rError } = await supabase
-        .from('hockey_rentals')
-        .select(`
-          id, renter_name, rented_at, due_date, returned_at, fee_total, paid,
-          hockey_rental_items(
-            item_id, returned_at,
-            hockey_equipment_items(id, item_code, brand, size, category_label)
-          )
-        `)
-        .eq('id', rentalId)
-        .single();
-
-      if (rError || !rental) {
-        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
-      }
-
-      // Aktuelle aktive Items der Ausleihe
-      const rItems = (rental.hockey_rental_items || [])
-        .filter((ri: any) => !ri.returned_at)
-        .map((ri: any) => ri.hockey_equipment_items)
-        .filter(Boolean);
-
-      // 2. Vertrag ausschließlich aus der Datenbank laden (hockey_rental_contracts)
-      const { data: cData, error: cError } = await supabase
-        .from('hockey_rental_contracts')
-        .select('*')
-        .eq('rental_id', rentalId)
-        .maybeSingle();
-
-      if (cError) {
-        console.error(`[Contract Fetch Error]: Rental ${rentalId} - ${cError.message}`);
-        return res.status(500).json({ 
-          success: false, 
-          message: "Fehler beim Laden der Vertragsdaten aus der Datenbank." 
-        });
-      }
-
-      res.json({
-        success: true,
-        contract: cData || null,
-        rental: {
-          id: rental.id,
-          renter_name: rental.renter_name,
-          rented_at: rental.rented_at,
-          due_date: rental.due_date,
-          returned_at: rental.returned_at,
-          fee_total: rental.fee_total,
-          active_items: rItems
-        }
-      });
-    } catch (err: any) {
-      console.error(`[Contract Fetch Error]: Rental ${rentalId} - ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Laden der Vertragsdaten." });
-    }
-  });
-
-  // POST /api/rentals/:id/contract - Vertragsentwurf speichern oder aktualisieren
-  app.post("/api/rentals/:id/contract", authHeader, async (req, res) => {
-    const supabase = getSupabase();
-    const rentalId = Number(req.params.id);
-    const {
-      first_name,
-      last_name,
-      child_name,
-      street,
-      house_number,
-      postal_code,
-      city,
-      phone,
-      email,
-      iban,
-      deposit_amount,
-      fee_amount,
-      status
-    } = req.body;
-
-    // Validierung aller erforderlichen Felder
-    if (!first_name || !last_name || !child_name || !street || !house_number || !postal_code || !city || !phone || !email || !iban) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Bitte alle Pflichtfelder (Name, Kind, Adresse, Telefon, E-Mail und IBAN) ausfüllen." 
-      });
-    }
-
-    const emailTrimmed = String(email).trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Bitte eine gültige E-Mail-Adresse angeben." 
-      });
-    }
-
-    const cleanIban = String(iban).replace(/\s+/g, '').toUpperCase();
-    if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Bitte eine gültige IBAN angeben (z. B. DE...)." 
-      });
-    }
-
-    try {
-      // 0. Prüfen, ob bereits ein verbindlich unterschriebener Vertrag existiert (Unveränderlichkeit)
-      const { data: existingContract } = await supabase
-        .from('hockey_rental_contracts')
-        .select('id, status')
-        .eq('rental_id', rentalId)
-        .maybeSingle();
-
-      if (existingContract && existingContract.status === 'signed') {
-        return res.status(409).json({ 
-          success: false, 
-          message: "Dieser Vertrag ist bereits verbindlich unterschrieben und kann nicht mehr geändert werden." 
-        });
-      }
-
-      // 1. Aktuelle aktive Equipmentteile für den Snapshot ermitteln
-      const { data: riData } = await supabase
-        .from('hockey_rental_items')
-        .select(`
-          item_id,
-          returned_at,
-          hockey_equipment_items(id, item_code, brand, size, category_label)
-        `)
-        .eq('rental_id', rentalId)
-        .is('returned_at', null);
-
-      const equipmentSnapshot = (riData || [])
-        .map((ri: any) => ri.hockey_equipment_items)
-        .filter(Boolean)
-        .map((eq: any) => ({
-          id: eq.id,
-          item_code: eq.item_code,
-          brand: eq.brand,
-          size: eq.size,
-          category_label: eq.category_label
-        }));
-
-      const contractPayload: any = {
-        rental_id: rentalId,
-        first_name: String(first_name).trim(),
-        last_name: String(last_name).trim(),
-        child_name: String(child_name).trim(),
-        street: String(street).trim(),
-        house_number: String(house_number).trim(),
-        postal_code: String(postal_code).trim(),
-        city: String(city).trim(),
-        phone: String(phone).trim(),
-        email: emailTrimmed,
-        iban: cleanIban,
-        deposit_amount: deposit_amount !== undefined ? Number(deposit_amount) : 50.00,
-        fee_amount: fee_amount !== undefined ? Number(fee_amount) : 60.00,
-        equipment_snapshot: equipmentSnapshot,
-        status: status || 'draft',
-        updated_at: new Date().toISOString()
-      };
-
-      // 2. Ausschließlich dauerhaft in Supabase speichern (Upsert über UNIQUE-Constraint auf rental_id)
-      const { data, error } = await supabase
-        .from('hockey_rental_contracts')
-        .upsert(contractPayload, { onConflict: 'rental_id' })
-        .select();
-
-      if (error || !data || data.length === 0) {
-        console.error(`[Contract Save DB Error]: Rental ${rentalId} - ${error?.message || 'Keine Daten von Datenbank zurückgegeben'}`);
-        return res.status(500).json({ 
-          success: false, 
-          message: "Der Vertrag konnte nicht dauerhaft gespeichert werden. Bitte erneut versuchen." 
-        });
-      }
-
-      const savedContract = data[0];
-
-      // Renter-Name im Verleihdatensatz synchronisieren falls sinnvoll
-      const fullName = `${contractPayload.first_name} ${contractPayload.last_name}`;
-      await supabase
-        .from('hockey_rentals')
-        .update({ renter_name: fullName })
-        .eq('id', rentalId);
-
-      // Datenschutz: Niemals IBAN, Anschrift, Telefon, E-Mail oder Signaturdaten loggen!
-      console.log(`[Contract Saved]: Rental ${rentalId}, Status: ${savedContract.status}, Items: ${equipmentSnapshot.length}`);
-
-      res.json({ 
-        success: true, 
-        contract: savedContract
-      });
-    } catch (err: any) {
-      console.error(`[Contract Save Exception]: Rental ${rentalId} - ${err.message}`);
-      res.status(500).json({ 
-        success: false, 
-        message: "Der Vertrag konnte nicht dauerhaft gespeichert werden. Bitte erneut versuchen." 
-      });
-    }
-  });
-
-  // Rate-Limiting für öffentliche Endpunkte (Schutz vor Missbrauch und Brute-Force)
-  const publicRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-  const checkRateLimit = (ip: string, maxRequests = 30, windowMs = 60000): boolean => {
-    const now = Date.now();
-    const record = publicRateLimitMap.get(ip);
-    if (!record || now > record.resetAt) {
-      publicRateLimitMap.set(ip, { count: 1, resetAt: now + windowMs });
-      return true;
-    }
-    if (record.count >= maxRequests) {
-      return false;
-    }
-    record.count++;
-    return true;
+  const template=createContractSnapshot();
+  // Review hashes must match across independent serverless instances.
+  delete template.generated_at;
+  const contractRpc=(action: string,id: number,data: any={},token: string|null=null,review: string|null=null) =>
+    rpc('hockey_contract_write',{p_action:action,p_id:id,p_data:data,p_token:token,p_review_hash:review,p_template:template});
+  const tokenHash=(token: unknown) => {
+    if (typeof token!=='string' || !/^[a-f0-9]{64}$/.test(token)) throw new HttpError(410,'Vertragslink ist nicht mehr gültig.');
+    return crypto.createHash('sha256').update(token).digest('hex');
   };
-
-  // Gemeinsame sichere Backend-Finalisierung für Vertragsunterzeichnung (Phase 2 & externer Link)
-  async function finalizeContractSigning(
-    rentalId: number,
-    signature_data: string,
-    signer_name: string
-  ): Promise<{ success: boolean; status?: number; message?: string; contract?: any; pdf_path?: string }> {
-    const supabase = getSupabase();
-
-    // 1. Signaturdaten prüfen (darf nicht leer sein)
-    if (!signature_data || typeof signature_data !== 'string' || !signature_data.startsWith('data:image/png;base64,')) {
-      return {
-        success: false,
-        status: 400,
-        message: "Bitte eine gültige Unterschrift zeichnen."
-      };
-    }
-
-    // Leere Leinwand abfangen (Base64-Payload muss substanziell sein)
-    const base64Data = signature_data.replace(/^data:image\/png;base64,/, '');
-    if (base64Data.length < 200) {
-      return {
-        success: false,
-        status: 400,
-        message: "Die Unterschrift ist unvollständig oder leer. Bitte erneut unterschreiben."
-      };
-    }
-
+  async function publicContract(token: unknown) {
+    const hash=tokenHash(token);
+    const {data,error}=await getSupabase().from('hockey_rental_contracts').select('rental_id').eq('signing_token_hash',hash).maybeSingle();
+    if (error) throw new HttpError(503,'Vertrag konnte nicht geladen werden.');
+    if (!data) throw new HttpError(410,'Vertragslink ist nicht mehr gültig.');
+    return {id:positiveId(data.rental_id),hash};
+  }
+  function previewResponse(state: any,publicMode=false) {
+    const contract=state.contract;
+    return {success:true,contract:publicMode && contract ? {
+      ...Object.fromEntries(['first_name','last_name','child_name','street','house_number','postal_code','city','phone','email','iban','fee_amount','deposit_amount','status'].map(k=>[k,contract[k]]))
+    } : contract,rental:{...state.rental,active_items:state.equipment},equipment:state.equipment,
+      review_hash:state.review_hash,expires_at:contract?.signing_token_expires_at};
+  }
+  app.get('/api/rentals/:id/contract',authHeader,run(async(req,res)=>res.json(previewResponse(await contractRpc('preview',positiveId(req.params.id))))));
+  app.post('/api/rentals/:id/contract',authHeader,run(async(req,res)=>{
+    const state=await contractRpc('save',positiveId(req.params.id),contractFields(req.body));
+    res.json(previewResponse(state));
+  }));
+  app.post('/api/rentals/:id/contract/signing-link',authHeader,run(async(req,res)=>{
+    const token=crypto.randomBytes(32).toString('hex');
+    const expires=new Date(Date.now()+7*86400000).toISOString();
+    await contractRpc('link',positiveId(req.params.id),{hash:tokenHash(token),expires_at:expires});
+    res.json({success:true,token,expires_at:expires});
+  }));
+  app.get('/api/public/contract',run(async(req,res)=>{
+    const {id,hash}=await publicContract(req.query.token);
+    res.json(previewResponse(await contractRpc('preview',id,{},hash),true));
+  }));
+  app.post('/api/public/contract/update',run(async(req,res)=>{
+    const {id,hash}=await publicContract(req.body.token);
+    res.json(previewResponse(await contractRpc('save',id,contractFields(req.body,true),hash),true));
+  }));
+  async function finalizeContractSigning(id:number,body:any,token:string|null=null) {
+    const signature=validateSignature(body.signature_data);
+    const name=text(body.signer_name,'Name der unterzeichnenden Person');
+    if (typeof body.review_hash!=='string' || !/^[a-f0-9]{32}$/.test(body.review_hash)) throw new HttpError(409,'Bitte den Vertrag erneut laden und prüfen.');
+    const state=await contractRpc('preview',id,{},token);
+    if (state.review_hash!==body.review_hash) throw new HttpError(409,'Vertrag wurde geändert. Bitte erneut laden und prüfen.');
+    if (!state.contract || state.contract.status!=='draft' || state.rental.returned_at || !state.equipment.length) throw new HttpError(409,'Kein aktiver Vertragsentwurf vorhanden.');
+    contractFields(state.contract);
+    const signedAt=new Date().toISOString();
+    const pdf=await generateContractPdf({rentalId:id,rental:state.rental,contract:{...state.contract,
+      equipment_snapshot:state.equipment,contract_snapshot:template,signature_data:signature,signer_name:name,signed_at:signedAt}});
+    const storagePath=`contracts/${id}/contract_${crypto.randomUUID()}.pdf`;
+    const {error}=await getSupabase().storage.from('hockey-contracts').upload(storagePath,Buffer.from(pdf),{contentType:'application/pdf',upsert:false});
+    if (error) throw new HttpError(503,'PDF konnte nicht archiviert werden. Der Vertrag wurde nicht abgeschlossen.');
     try {
-      // 2. Rental aus der Datenbank laden
-      const { data: rental, error: rError } = await supabase
-        .from('hockey_rentals')
-        .select(`
-          id, renter_name, rented_at, due_date, returned_at, fee_total, paid,
-          hockey_rental_items(
-            item_id, returned_at,
-            hockey_equipment_items(id, item_code, brand, size, category, category_label)
-          )
-        `)
-        .eq('id', rentalId)
-        .single();
-
-      if (rError || !rental) {
-        return { success: false, status: 404, message: "Ausleihe nicht gefunden." };
-      }
-
-      // 3. Vorhandenen Vertrag laden
-      const { data: contract, error: cError } = await supabase
-        .from('hockey_rental_contracts')
-        .select('*')
-        .eq('rental_id', rentalId)
-        .maybeSingle();
-
-      if (cError || !contract) {
-        return {
-          success: false,
-          status: 404,
-          message: "Kein Vertragsentwurf vorhanden. Bitte zuerst die Vertragsdaten erfassen und speichern."
-        };
-      }
-
-      // Eindeutige Prüfung: Ein bereits unterschriebener Vertrag darf nicht überschrieben werden
-      if (contract.status === 'signed') {
-        return {
-          success: false,
-          status: 409,
-          message: "Dieser Vertrag wurde bereits verbindlich abgeschlossen und unterschrieben."
-        };
-      }
-
-      // 4. Frischer Equipment-Snapshot serverseitig direkt aus der DB
-      const rItems = (rental.hockey_rental_items || [])
-        .filter((ri: any) => !ri.returned_at)
-        .map((ri: any) => ri.hockey_equipment_items)
-        .filter(Boolean);
-
-      const equipmentSnapshot = rItems.map((eq: any) => ({
-        id: eq.id,
-        item_code: eq.item_code,
-        category: eq.category,
-        category_label: eq.category_label || eq.category,
-        brand: eq.brand,
-        size: eq.size
-      }));
-
-      // 5. Vertragstext-Snapshot erzeugen (vollständige, unveränderliche Version)
-      const contractSnapshot = createContractSnapshot();
-      const signedAt = new Date().toISOString();
-      const effectiveSignerName = (signer_name || `${contract.first_name} ${contract.last_name}`).trim();
-
-      // 6. Finales PDF erzeugen
-      const contractForPdf = {
-        ...contract,
-        signer_name: effectiveSignerName,
-        signed_at: signedAt,
-        signature_data: signature_data,
-        equipment_snapshot: equipmentSnapshot,
-        contract_snapshot: contractSnapshot
-      };
-
-      let pdfBytes: Uint8Array;
-      try {
-        pdfBytes = await generateContractPdf({
-          rentalId,
-          contract: contractForPdf,
-          rental: {
-            id: rental.id,
-            rented_at: rental.rented_at,
-            due_date: rental.due_date
-          }
-        });
-      } catch (pdfErr: any) {
-        console.error(`[PDF Generation Error]: Rental ${rentalId} - ${pdfErr.message}`);
-        return {
-          success: false,
-          status: 500,
-          message: "Fehler beim Erzeugen des Vertrags-PDFs. Bitte erneut versuchen."
-        };
-      }
-
-      // 7. Sichere Speicherung im privaten Supabase-Storage (hockey-contracts)
-      const timestamp = Date.now();
-      const storagePath = `contracts/${rentalId}/contract_${rentalId}_${timestamp}.pdf`;
-      const pdfBuffer = Buffer.from(pdfBytes);
-
-      try {
-        await supabase.storage.createBucket('hockey-contracts', { public: false });
-      } catch {}
-
-      const { error: uploadError } = await supabase
-        .storage
-        .from('hockey-contracts')
-        .upload(storagePath, pdfBuffer, {
-          contentType: 'application/pdf',
-          upsert: true
-        });
-
-      if (uploadError) {
-        console.error(`[Storage Upload Error]: Rental ${rentalId} - ${uploadError.message}`);
-        return {
-          success: false,
-          status: 500,
-          message: "Das Vertrags-PDF konnte nicht im sicheren Speicher abgelegt werden. Der Vertrag wurde nicht abgeschlossen."
-        };
-      }
-
-      // 8. Vertragsdaten in der Datenbank ATOMAR von 'draft' auf 'signed' setzen
-      // Gleichzeitig wird der signing_token_hash gelöscht, sodass der Link sofort ungültig wird!
-      const updatePayload: any = {
-        status: 'signed',
-        signed_at: signedAt,
-        signer_name: effectiveSignerName,
-        signature_data: signature_data,
-        pdf_path: storagePath,
-        pdf_url: null, // Private Speicherung - niemals öffentliche URL!
-        equipment_snapshot: equipmentSnapshot,
-        contract_snapshot: contractSnapshot,
-        contract_version: CURRENT_CONTRACT_VERSION,
-        signing_token_hash: null,
-        signing_token_expires_at: null,
-        updated_at: signedAt
-      };
-
-      const { data: updatedData, error: updateError } = await supabase
-        .from('hockey_rental_contracts')
-        .update(updatePayload)
-        .eq('rental_id', rentalId)
-        .eq('status', 'draft')
-        .select();
-
-      // Fall A: Technischer Datenbankfehler
-      if (updateError) {
-        console.error(`[Contract Sign DB Error]: Rental ${rentalId} - ${updateError.message}`);
-        try {
-          await supabase.storage.from('hockey-contracts').remove([storagePath]);
-        } catch {}
-        return {
-          success: false,
-          status: 500,
-          message: "Der Status des Vertrags konnte in der Datenbank nicht aktualisiert werden."
-        };
-      }
-
-      // Fall B: Race Condition / Vertrag nicht mehr im Status 'draft'
-      if (!updatedData || updatedData.length === 0) {
-        console.warn(`[Contract Sign Conflict]: Rental ${rentalId} - Vertrag wurde bereits durch einen parallelen Vorgang abgeschlossen.`);
-        try {
-          const { data: existingContract } = await supabase
-            .from('hockey_rental_contracts')
-            .select('pdf_path')
-            .eq('rental_id', rentalId)
-            .maybeSingle();
-
-          if (!existingContract || existingContract.pdf_path !== storagePath) {
-            await supabase.storage.from('hockey-contracts').remove([storagePath]);
-          }
-        } catch {}
-
-        return {
-          success: false,
-          status: 409,
-          message: "Dieser Vertrag wurde bereits durch einen parallelen Vorgang verbindlich abgeschlossen."
-        };
-      }
-
-      const finalizedContract = updatedData[0];
-      console.log(`[Contract Finalized]: Rental ${rentalId}, Version: ${CURRENT_CONTRACT_VERSION}`);
-
-      return {
-        success: true,
-        contract: finalizedContract,
-        pdf_path: storagePath
-      };
-    } catch (err: any) {
-      console.error(`[Contract Sign Exception]: Rental ${rentalId} - ${err.message}`);
-      return {
-        success: false,
-        status: 500,
-        message: "Unerwarteter Fehler beim Abschließen des Vertrags."
-      };
+      return await contractRpc('sign',id,{signature_data:signature,signer_name:name,signed_at:signedAt,pdf_path:storagePath,
+        pdf_sha256:crypto.createHash('sha256').update(pdf).digest('hex'),contract_version:CURRENT_CONTRACT_VERSION},token,body.review_hash);
+    } catch(error) {
+      const {error:cleanupError}=await getSupabase().storage.from('hockey-contracts').remove([storagePath]);
+      if(cleanupError) console.error('PDF cleanup failed',cleanupError.code);
+      throw error;
     }
   }
+  app.post('/api/rentals/:id/contract/sign',authHeader,run(async(req,res)=>res.json(previewResponse(await finalizeContractSigning(positiveId(req.params.id),req.body)))));
+  app.post('/api/public/contract/sign',run(async(req,res)=>{
+    const {id,hash}=await publicContract(req.body.token);
+    await finalizeContractSigning(id,req.body,hash);
+    res.json({success:true,message:'Vertrag erfolgreich unterschrieben.'});
+  }));
 
-  // POST /api/rentals/:id/contract/sign - Vertrag im Adminbereich verbindlich abschließen (Phase 2)
-  app.post("/api/rentals/:id/contract/sign", authHeader, async (req, res) => {
-    const rentalId = Number(req.params.id);
-    const { signature_data, signer_name } = req.body;
-    const result = await finalizeContractSigning(rentalId, signature_data, signer_name);
-    if (!result.success) {
-      return res.status(result.status || 500).json({ success: false, message: result.message });
-    }
-    res.json({
-      success: true,
-      contract: result.contract,
-      pdf_path: result.pdf_path
-    });
-  });
-
-  // POST /api/rentals/:id/contract/signing-link - Sicheren individuellen Signing-Token erzeugen
-  app.post("/api/rentals/:id/contract/signing-link", authHeader, async (req, res) => {
-    try {
-      const supabase = getSupabase();
-      const rentalId = Number(req.params.id);
-
-      // 1. Ausleihe prüfen
-      const { data: rental, error: rErr } = await supabase
-        .from('hockey_rentals')
-        .select('id, renter_name, fee_total')
-        .eq('id', rentalId)
-        .single();
-
-      if (rErr || !rental) {
-        return res.status(404).json({ success: false, message: "Ausleihe nicht gefunden." });
-      }
-
-      // 2. Bestehenden Vertrag prüfen
-      const { data: contract } = await supabase
-        .from('hockey_rental_contracts')
-        .select('id, rental_id, status')
-        .eq('rental_id', rentalId)
-        .maybeSingle();
-
-      if (contract && contract.status === 'signed') {
-        return res.status(400).json({
-          success: false,
-          message: "Dieser Vertrag ist bereits verbindlich unterschrieben. Es kann kein neuer Link erzeugt werden."
-        });
-      }
-
-      // 3. Kryptografisch sicheren 32-Byte Zufallstoken erzeugen (64 Hex-Zeichen)
-      const rawToken = crypto.randomBytes(32).toString('hex');
-      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-      // Standardmäßig 7 Tage gültig
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
-      if (!contract) {
-        // Neuen Entwurf anlegen, falls noch keiner existiert
-        const nameParts = (rental.renter_name || '').trim().split(' ');
-        const fName = nameParts[0] || '';
-        const lName = nameParts.slice(1).join(' ') || '';
-        const initialPayload = {
-          rental_id: rentalId,
-          first_name: fName,
-          last_name: lName,
-          child_name: '',
-          street: '',
-          house_number: '',
-          postal_code: '',
-          city: '',
-          phone: '',
-          email: '',
-          iban: '',
-          deposit_amount: 50.00,
-          fee_amount: rental.fee_total !== undefined ? Number(rental.fee_total) : 60.00,
-          status: 'draft',
-          signing_token_hash: tokenHash,
-          signing_token_expires_at: expiresAt,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-
-        const { error: insErr } = await supabase
-          .from('hockey_rental_contracts')
-          .insert(initialPayload);
-
-        if (insErr) {
-          return res.status(500).json({ success: false, message: "Fehler beim Anlegen des Vertragsentwurfs." });
-        }
-      } else {
-        // Bestehenden Entwurf mit neuem Token-Hash & Ablaufdatum aktualisieren (überschreibt vorherigen Link)
-        const { error: updErr } = await supabase
-          .from('hockey_rental_contracts')
-          .update({
-            signing_token_hash: tokenHash,
-            signing_token_expires_at: expiresAt,
-            updated_at: new Date().toISOString()
-          })
-          .eq('rental_id', rentalId);
-
-        if (updErr) {
-          return res.status(500).json({ success: false, message: "Fehler beim Aktualisieren des Signier-Links." });
-        }
-      }
-
-      console.log(`[Signing Link Created]: Rental ${rentalId}`);
-      res.json({
-        success: true,
-        token: rawToken,
-        expires_at: expiresAt
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  });
-
-  // GET /api/public/contract - Öffentliche Vertragsdaten für Entleiher via sicherem Token laden
-  app.get("/api/public/contract", async (req, res) => {
-    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
-    if (!checkRateLimit(ip)) {
-      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
-    }
-
-    const rawToken = typeof req.query.token === 'string' ? req.query.token.trim() : '';
-    if (!rawToken || rawToken.length < 16) {
-      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-    }
-
-    try {
-      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-      const supabase = getSupabase();
-
-      const { data: contract, error: cErr } = await supabase
-        .from('hockey_rental_contracts')
-        .select('*')
-        .eq('signing_token_hash', tokenHash)
-        .maybeSingle();
-
-      if (cErr || !contract) {
-        return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      if (contract.status === 'signed') {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      // Rental und zugehörige aktive Items laden
-      const { data: rental, error: rErr } = await supabase
-        .from('hockey_rentals')
-        .select(`
-          id, renter_name, rented_at, due_date, fee_total,
-          hockey_rental_items(
-            item_id, returned_at,
-            hockey_equipment_items(id, item_code, brand, size, category, category_label)
-          )
-        `)
-        .eq('id', contract.rental_id)
-        .single();
-
-      if (rErr || !rental) {
-        return res.status(404).json({ success: false, message: "Ausleihe zu diesem Vertrag wurde nicht gefunden." });
-      }
-
-      const rItems = (rental.hockey_rental_items || [])
-        .filter((ri: any) => !ri.returned_at)
-        .map((ri: any) => ri.hockey_equipment_items)
-        .filter(Boolean);
-
-      const equipment = rItems.map((eq: any) => ({
-        id: eq.id,
-        item_code: eq.item_code,
-        category: eq.category,
-        category_label: eq.category_label || eq.category,
-        brand: eq.brand,
-        size: eq.size
-      }));
-
-      // Rückgabe NUR der für den Vertrag notwendigen Daten (kein Zugriff auf andere Daten, keine Tokens)
-      res.json({
-        success: true,
-        contract: {
-          first_name: contract.first_name || '',
-          last_name: contract.last_name || '',
-          child_name: contract.child_name || '',
-          street: contract.street || '',
-          house_number: contract.house_number || '',
-          postal_code: contract.postal_code || '',
-          city: contract.city || '',
-          phone: contract.phone || '',
-          email: contract.email || '',
-          iban: contract.iban || '',
-          fee_amount: contract.fee_amount !== undefined ? Number(contract.fee_amount) : (rental.fee_total || 60.00),
-          deposit_amount: contract.deposit_amount !== undefined ? Number(contract.deposit_amount) : 50.00,
-          status: contract.status
-        },
-        rental: {
-          id: rental.id,
-          rented_at: rental.rented_at,
-          due_date: rental.due_date,
-          fee_total: rental.fee_total
-        },
-        equipment,
-        expires_at: contract.signing_token_expires_at
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: "Fehler beim Laden des Vertrags." });
-    }
-  });
-
-  // POST /api/public/contract/update - Entleiher darf persönliche Daten vor Unterschrift ergänzen/korrigieren
-  app.post("/api/public/contract/update", async (req, res) => {
-    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
-    if (!checkRateLimit(ip)) {
-      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
-    }
-
-    const {
-      token: rawToken,
-      first_name,
-      last_name,
-      child_name,
-      street,
-      house_number,
-      postal_code,
-      city,
-      phone,
-      email,
-      iban
-    } = req.body;
-
-    if (!rawToken || typeof rawToken !== 'string') {
-      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-    }
-
-    try {
-      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
-      const supabase = getSupabase();
-
-      const { data: contract, error: cErr } = await supabase
-        .from('hockey_rental_contracts')
-        .select('id, rental_id, status, signing_token_expires_at')
-        .eq('signing_token_hash', tokenHash)
-        .maybeSingle();
-
-      if (cErr || !contract || contract.status !== 'draft') {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      // Validierung der Pflichtfelder
-      if (!first_name?.trim() || !last_name?.trim() || !child_name?.trim()) {
-        return res.status(400).json({ success: false, message: "Bitte Vorname, Nachname und Name des Kindes angeben." });
-      }
-      if (!street?.trim() || !house_number?.trim() || !postal_code?.trim() || !city?.trim()) {
-        return res.status(400).json({ success: false, message: "Bitte die Anschrift vollständig angeben (Straße, Hausnr., PLZ, Ort)." });
-      }
-      if (!phone?.trim()) {
-        return res.status(400).json({ success: false, message: "Bitte eine Telefonnummer angeben." });
-      }
-      const cleanEmail = (email || '').trim();
-      if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-        return res.status(400).json({ success: false, message: "Bitte eine gültige E-Mail-Adresse angeben." });
-      }
-      const cleanIban = (iban || '').replace(/\s+/g, '').toUpperCase();
-      if (cleanIban.length < 15 || !/^[A-Z]{2}[0-9]{2}[A-Z0-9]+$/.test(cleanIban)) {
-        return res.status(400).json({ success: false, message: "Bitte eine gültige IBAN angeben (mind. 15 Stellen, z. B. DE...)." });
-      }
-
-      // Ausschließlich persönliche Daten dürfen aktualisiert werden (Equipment, Gebühr, Kaution etc. bleiben geschützt)
-      const updateFields = {
-        first_name: first_name.trim(),
-        last_name: last_name.trim(),
-        child_name: child_name.trim(),
-        street: street.trim(),
-        house_number: house_number.trim(),
-        postal_code: postal_code.trim(),
-        city: city.trim(),
-        phone: phone.trim(),
-        email: cleanEmail,
-        iban: cleanIban,
-        updated_at: new Date().toISOString()
-      };
-
-      const { error: uErr } = await supabase
-        .from('hockey_rental_contracts')
-        .update(updateFields)
-        .eq('id', contract.id)
-        .eq('status', 'draft');
-
-      if (uErr) {
-        return res.status(500).json({ success: false, message: "Fehler beim Speichern der Vertragsdaten." });
-      }
-
-      // Name des Entleihers auch in hockey_rentals synchronisieren
-      try {
-        const fullName = `${updateFields.first_name} ${updateFields.last_name}`;
-        await supabase.from('hockey_rentals').update({ renter_name: fullName }).eq('id', contract.rental_id);
-      } catch {}
-
-      res.json({
-        success: true,
-        contract: updateFields
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: "Fehler beim Speichern der Vertragsdaten." });
-    }
-  });
-
-  // POST /api/public/contract/sign - Entleiher signiert Vertrag verbindlich über den Sicherheits-Link
-  app.post("/api/public/contract/sign", async (req, res) => {
-    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
-    if (!checkRateLimit(ip)) {
-      return res.status(429).json({ success: false, message: "Zu viele Anfragen. Bitte versuchen Sie es später erneut." });
-    }
-
-    const { token: rawToken, signature_data, signer_name } = req.body;
-
-    if (!rawToken || typeof rawToken !== 'string') {
-      return res.status(404).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-    }
-
-    try {
-      const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
-      const supabase = getSupabase();
-
-      const { data: contract, error: cErr } = await supabase
-        .from('hockey_rental_contracts')
-        .select('id, rental_id, status, signing_token_expires_at')
-        .eq('signing_token_hash', tokenHash)
-        .maybeSingle();
-
-      if (cErr || !contract || contract.status !== 'draft') {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      if (contract.signing_token_expires_at && new Date(contract.signing_token_expires_at).getTime() < Date.now()) {
-        return res.status(410).json({ success: false, message: "Dieser Vertragslink ist nicht mehr gültig." });
-      }
-
-      // Wiederverwendung der sicheren bestehenden Signierlogik!
-      const result = await finalizeContractSigning(contract.rental_id, signature_data, signer_name);
-      if (!result.success) {
-        return res.status(result.status || 500).json({ success: false, message: result.message });
-      }
-
-      // Nach Abschluss: einfache Bestätigung, keine sensiblen Daten zurücksenden
-      res.json({
-        success: true,
-        message: "Vielen Dank. Der Vertrag wurde erfolgreich unterschrieben."
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: "Fehler beim Abschließen des Vertrags." });
-    }
-  });
-
-  // GET /api/rentals/:id/contract/pdf - Signiertes Vertrags-PDF geschützt abrufen
   app.get("/api/rentals/:id/contract/pdf", authHeader, async (req, res) => {
     const supabase = getSupabase();
     const rentalId = Number(req.params.id);
@@ -1710,24 +457,9 @@ function calculateDueDate(startDateStr: string): string {
 
       if (downloadError || !fileData) {
         // Fallback: Falls Datei im Storage fehlt, aber Contract signed ist -> aus Snapshot neu generieren
-        if (contract.contract_snapshot) {
-          const { data: rental } = await supabase
-            .from('hockey_rentals')
-            .select('id, rented_at, due_date')
-            .eq('id', rentalId)
-            .single();
-
-          const pdfBytes = await generateContractPdf({
-            rentalId,
-            contract,
-            rental: rental || { id: rentalId, rented_at: contract.created_at, due_date: null }
-          });
-          
-          // Re-upload ins Storage
-          try {
-            await supabase.storage.from('hockey-contracts').upload(storagePath, Buffer.from(pdfBytes), { upsert: true });
-          } catch {}
-
+        if (contract.contract_snapshot && contract.rental_snapshot && !contract.pdf_sha256) {
+          const pdfBytes = await generateContractPdf({rentalId,contract,rental:contract.rental_snapshot});
+          // Legacy recovery only. New archives require the original hashed PDF.
           res.setHeader('Content-Type', 'application/pdf');
           res.setHeader('Content-Disposition', `inline; filename="Ausleihvertrag_${rentalId}.pdf"`);
           return res.send(Buffer.from(pdfBytes));
@@ -1744,6 +476,9 @@ function calculateDueDate(startDateStr: string): string {
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="Ausleihvertrag_${rentalId}.pdf"`);
+      if (contract.pdf_sha256 && crypto.createHash('sha256').update(buffer).digest('hex') !== contract.pdf_sha256) {
+        throw new Error('Archiv-PDF stimmt nicht mit dem gespeicherten Hash überein.');
+      }
       res.send(buffer);
     } catch (err: any) {
       console.error(`[Contract PDF Download Error]: Rental ${rentalId} - ${err.message}`);
@@ -1783,113 +518,19 @@ function calculateDueDate(startDateStr: string): string {
     }
   });
 
-  app.delete("/api/items/:id", authHeader, async (req, res) => {
-    try {
-      const supabase = getSupabase();
-      const { id } = req.params;
-
-      const { data: riData, error: checkError } = await supabase
-        .from('hockey_rental_items')
-        .select('id')
-        .eq('item_id', id);
-
-      if (checkError) throw checkError;
-      
-      if (riData && riData.length > 0) {
-        const { error: updateError } = await supabase
-          .from('hockey_equipment_items')
-          .update({ 
-            is_deleted: true,
-            status: 'ausgemustert'
-          })
-          .eq('id', id);
-
-        if (updateError) throw updateError;
-        
-        console.log(`[Item Soft-Deleted]: ID ${id} (kept for history)`);
-        return res.json({ success: true, message: "Item wurde ausgemustert und aus dem Bestand entfernt. Die Historie bleibt erhalten." });
-      }
-
-      const { error } = await supabase
-        .from('hockey_equipment_items')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-      
-      console.log(`[Item Hard-Deleted]: ID ${id}`);
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error(`[Item Deletion Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Löschen des Items." });
-    }
+  app.delete('/api/items/:id',authHeader,run(async(req,res)=>res.json(await mutate('delete_item',{id:positiveId(req.params.id)}))));
+  app.delete('/api/rentals/:id',authHeader,run(async(req,res)=>res.json(await mutate('delete',{id:positiveId(req.params.id)}))));
+  app.use((error: any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
+    const status=error instanceof HttpError ? error.status : error.type==='entity.too.large' ? 413 : error instanceof SyntaxError ? 400 : 500;
+    if(status===500) console.error('API error',error.message);
+    res.status(status).json({success:false,message:error instanceof HttpError ? error.message : status===400 ? 'Ungültige Anfrage.' : 'Interner Serverfehler.'});
   });
-
-  app.delete("/api/rentals/:id", authHeader, async (req, res) => {
-    try {
-      const supabase = getSupabase();
-      const { id } = req.params;
-
-      const { data: riData, error: riError } = await supabase
-        .from('hockey_rental_items')
-        .select('item_id, returned_at')
-        .eq('rental_id', id);
-
-      if (riError) throw riError;
-      
-      const activeItemIds = riData?.filter((ri: any) => !ri.returned_at).map((ri: any) => ri.item_id) || [];
-
-      const { data: rentalData, error: rentalFetchError } = await supabase
-        .from('hockey_rentals')
-        .select('returned_at')
-        .eq('id', id)
-        .single();
-
-      if (rentalFetchError) throw rentalFetchError;
-
-      if (!rentalData.returned_at && activeItemIds.length > 0) {
-        const { error: itemUpdateError } = await supabase
-          .from('hockey_equipment_items')
-          .update({ status: 'verfügbar' })
-          .in('id', activeItemIds);
-          
-        if (itemUpdateError) throw itemUpdateError;
-      }
-
-      const { error: riDeleteError } = await supabase
-        .from('hockey_rental_items')
-        .delete()
-        .eq('rental_id', id);
-
-      if (riDeleteError) throw riDeleteError;
-
-      const { error } = await supabase
-        .from('hockey_rentals')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-      
-      console.log(`[Rental Deleted]: ID ${id}`);
-      res.json({ success: true });
-    } catch (err: any) {
-      console.error(`[Rental Deletion Error]: ${err.message}`);
-      res.status(500).json({ success: false, message: "Fehler beim Löschen des Verleih-Eintrags." });
-    }
-  });
-
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
-
   return app;
 }
 
-const appPromise = startServer();
+let appPromise: Promise<express.Express> | undefined;
 
 export default async function handler(req: any, res: any) {
-  const app = await appPromise;
+  const app = await (appPromise ||= createApp());
   return app(req, res);
 }

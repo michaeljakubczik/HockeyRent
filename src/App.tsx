@@ -216,6 +216,10 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const fetchGeneration = useRef(0);
+  const paymentLocks = useRef(new Set<number>());
+
 
   const [rentingItem, setRentingItem] = useState<EquipmentItem | null>(null);
   const [editingBundleRental, setEditingBundleRental] = useState<Rental | null>(null);
@@ -388,9 +392,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    const savedPassword = sessionStorage.getItem('hockey_rent_password');
+    sessionStorage.removeItem('hockey_rent_password');
+    const savedPassword = sessionStorage.getItem('hockey_rent_session');
     if (savedPassword) {
-      checkLogin(savedPassword);
+      checkLogin(savedPassword, true);
     } else {
       fetchPublicItems();
     }
@@ -444,23 +449,22 @@ export default function App() {
     }
   };
 
-  const checkLogin = async (pass: string) => {
+  const checkLogin = async (pass: string, restore = false) => {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pass })
+      const res = await fetch(`${API_BASE}/${restore ? 'session' : 'login'}`, restore ? { headers: { 'x-admin-password': pass } } : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pass })
       });
-      const data: ApiResponse = await res.json();
+      const data: ApiResponse & {token?: string} = await res.json();
       if (res.ok && data.success) {
+        const session = restore ? pass : data.token!;
         setIsLoggedIn(true);
-        setPassword(pass);
+        setPassword(session);
         setError(null);
-        sessionStorage.setItem('hockey_rent_password', pass);
-        fetchItems(pass);
+        sessionStorage.setItem('hockey_rent_session', session);
+        await fetchItems(session);
       } else {
-        sessionStorage.removeItem('hockey_rent_password');
+        sessionStorage.removeItem('hockey_rent_session');
         setError(data.message || 'Ungültiges Passwort');
       }
     } catch (err) {
@@ -468,34 +472,28 @@ export default function App() {
     }
   };
 
-  const fetchItems = async (pass: string) => {
+  const fetchItems = async (pass: string): Promise<boolean> => {
+    const generation=++fetchGeneration.current;
     setLoading(true);
     try {
-      const [itemsRes, historyRes] = await Promise.all([
-        fetch(`${API_BASE}/items`, { headers: { 'x-admin-password': pass } }),
-        fetch(`${API_BASE}/history`, { headers: { 'x-admin-password': pass } })
+      const [itemsRes, historyRes]=await Promise.all([
+        fetch(`${API_BASE}/items`,{headers:{'x-admin-password':pass}}),
+        fetch(`${API_BASE}/history`,{headers:{'x-admin-password':pass}})
       ]);
-      
-      if (itemsRes.ok) {
-        const data = await itemsRes.json();
-        setItems(data);
+      if(!itemsRes.ok || !historyRes.ok) {
+        if(itemsRes.status===401 || historyRes.status===401) { setIsLoggedIn(false); sessionStorage.removeItem('hockey_rent_session'); }
+        throw new Error('Daten konnten nicht aktualisiert werden. Bitte erneut laden.');
       }
-      if (historyRes.ok) {
-        const data: Rental[] = await historyRes.json();
-        setHistory(data);
-        // If bundle editor modal is open, refresh its reference
-        if (editingBundleRental) {
-          const updated = data.find(r => r.id === editingBundleRental.id);
-          if (updated) {
-            setEditingBundleRental(updated);
-          }
-        }
-      }
-    } catch (err) {
-      setError('Fehler beim Laden der Daten');
-    } finally {
-      setLoading(false);
-    }
+      const [nextItems,nextHistory]=await Promise.all([itemsRes.json(),historyRes.json()]);
+      if(generation!==fetchGeneration.current) return false;
+      setItems(nextItems);
+      setHistory(nextHistory);
+      setEditingBundleRental(prev=>prev ? nextHistory.find((r:Rental)=>r.id===prev.id && !r.returned_at) || null : null);
+      return true;
+    } catch(err) {
+      if(generation===fetchGeneration.current) setError(err instanceof Error ? err.message : 'Fehler beim Laden der Daten');
+      return false;
+    } finally { if(generation===fetchGeneration.current) setLoading(false); }
   };
 
   const handleAddItem = async (e: React.FormEvent) => {
@@ -518,7 +516,7 @@ export default function App() {
       });
       if (res.ok) {
         setNewItem({ category: 'Helm', size: '', brand: '', image: null, condition_note: '' });
-        fetchItems(password);
+        await fetchItems(password);
         setCurrentView('available');
       } else {
         const data: ApiResponse = await res.json();
@@ -548,7 +546,7 @@ export default function App() {
       });
       if (res.ok) {
         setEditItem(null);
-        fetchItems(password);
+        await fetchItems(password);
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Aktualisieren');
@@ -593,7 +591,7 @@ export default function App() {
         setBag([]);
         // Neue Tasche startet wieder mit vollständig geöffnetem Bestand.
         setCollapsedCategories({});
-        fetchItems(password);
+        await fetchItems(password);
         setCurrentView('rentals');
         setRentalsSubTab('active');
         if (data.rentalId) {
@@ -639,7 +637,7 @@ export default function App() {
         setRentingItem(null);
         // Nach dem Verleih ist der Bestand für die nächste Auswahl wieder komplett geöffnet.
         setCollapsedCategories({});
-        fetchItems(password);
+        await fetchItems(password);
         setCurrentView('rentals');
         setRentalsSubTab('active');
         if (data.rentalId) {
@@ -681,7 +679,7 @@ export default function App() {
       }
 
       // Erst NACH bestätigter DB-Rückgabe neu laden und in "Abgeschlossen" wechseln.
-      await fetchItems(password);
+      if (!await fetchItems(password)) { setSuccess(null); return; }
       if (editingBundleRental?.id === rentalId) {
         setEditingBundleRental(null);
       }
@@ -714,7 +712,7 @@ export default function App() {
         body: JSON.stringify({ note })
       });
       if (res.ok) {
-        await fetchItems(password);
+        if (!await fetchItems(password)) { setSuccess(null); return; }
         actionHaptic('success');
         setSuccess('Teil erfolgreich zurückgegeben.');
         setTimeout(() => setSuccess(null), 2200);
@@ -745,7 +743,7 @@ export default function App() {
         body: JSON.stringify({ item_id: itemId, note })
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Hinzufügen des Teils');
@@ -776,7 +774,7 @@ export default function App() {
         })
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Austauschen des Ausrüstungsteils');
@@ -796,8 +794,8 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}/payment-status`, {
-        method: 'POST',
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
+        method: 'PATCH',
         headers: { 
           'Content-Type': 'application/json',
           'x-admin-password': password 
@@ -805,7 +803,7 @@ export default function App() {
         body: JSON.stringify(updates)
       });
       if (res.ok) {
-        fetchItems(password);
+        await fetchItems(password);
       } else {
         const data: ApiResponse = await res.json();
         setError(data.message || 'Fehler beim Aktualisieren der Details');
@@ -1041,7 +1039,7 @@ export default function App() {
         headers: { 'x-admin-password': password }
       });
       if (res.ok) {
-        await fetchItems(password);
+        if (!await fetchItems(password)) { setSuccess(null); return; }
         actionHaptic('success');
         setSuccess('Änderung gespeichert.');
         setTimeout(() => setSuccess(null), 2000);
@@ -1099,7 +1097,8 @@ export default function App() {
   };
 
   const handleMarkAsPaid = async (rentalId: number, paid: boolean = true) => {
-    if (paymentPendingRentalIds.has(rentalId)) return;
+    if (paymentLocks.current.has(rentalId)) return;
+    paymentLocks.current.add(rentalId);
 
     const previousRental = history.find(r => r.id === rentalId);
     const previousPaid = previousRental?.paid ?? !paid;
@@ -1127,6 +1126,10 @@ export default function App() {
         return;
       }
 
+      const data = await res.json();
+      if (!data.success || data.paid !== paid) throw new Error('Zahlungsstatus wurde nicht bestätigt');
+      setItems(prev=>prev.map(item=>item.active_rental_id===rentalId ? {...item,bezahlt:paid} : item));
+      setEditingBundleRental(prev=>prev?.id===rentalId ? {...prev,paid} : prev);
       actionHaptic('success');
       setSuccess(paid ? 'Zahlung als bezahlt gespeichert.' : 'Zahlungsstatus auf offen gesetzt.');
       window.setTimeout(() => setSuccess(null), 1800);
@@ -1135,6 +1138,7 @@ export default function App() {
       actionHaptic('error');
       setError(paid ? 'Fehler beim Markieren als bezahlt' : 'Fehler beim Markieren als offen');
     } finally {
+      paymentLocks.current.delete(rentalId);
       setPaymentPendingRentalIds(prev => {
         const next = new Set(prev);
         next.delete(rentalId);
@@ -1146,7 +1150,7 @@ export default function App() {
   const handleLogout = () => {
     setIsLoggedIn(false);
     setPassword('');
-    sessionStorage.removeItem('hockey_rent_password');
+    sessionStorage.removeItem('hockey_rent_session');
     fetchPublicItems();
   };
 
@@ -1365,6 +1369,7 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6 md:py-8">
+        {success && <div role="status" className="mb-4 rounded-2xl border border-emerald-700 bg-emerald-950/60 p-4 text-sm text-emerald-200">{success}</div>}
         {/* Error Messages */}
         <AnimatePresence>
           {error && (
@@ -3497,6 +3502,8 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
   const [hasDrawn, setHasDrawn] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
+  const submittingRef = useRef(isSubmitting);
+  submittingRef.current = isSubmitting;
 
   useEffect(() => {
     setSignerName(initialSignerName);
@@ -3508,6 +3515,7 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
     setHasDrawn(false);
     isDrawingRef.current = false;
 
+    let detach: (()=>void) | undefined;
     const timer = setTimeout(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -3526,7 +3534,7 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
 
       const onTouchStart = (e: TouchEvent) => {
         e.preventDefault();
-        if (isSubmitting) return;
+        if (submittingRef.current) return;
         const t = e.touches[0];
         const r = canvas.getBoundingClientRect();
         ctx.beginPath();
@@ -3536,7 +3544,7 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
 
       const onTouchMove = (e: TouchEvent) => {
         e.preventDefault();
-        if (!isDrawingRef.current || isSubmitting) return;
+        if (!isDrawingRef.current || submittingRef.current) return;
         const t = e.touches[0];
         const r = canvas.getBoundingClientRect();
         ctx.lineTo(t.clientX - r.left, t.clientY - r.top);
@@ -3553,15 +3561,15 @@ const SignatureModal: React.FC<SignatureModalProps> = ({
       canvas.addEventListener('touchmove', onTouchMove, { passive: false });
       canvas.addEventListener('touchend', onTouchEnd, { passive: false });
 
-      return () => {
+      detach = () => {
         canvas.removeEventListener('touchstart', onTouchStart);
         canvas.removeEventListener('touchmove', onTouchMove);
         canvas.removeEventListener('touchend', onTouchEnd);
       };
     }, 60);
 
-    return () => clearTimeout(timer);
-  }, [show, isSubmitting]);
+    return () => { clearTimeout(timer); detach?.(); };
+  }, [show]);
 
   if (!show) return null;
 
@@ -4027,6 +4035,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
     active_items: EquipmentItem[];
   } | null>(null);
 
+  const [reviewHash, setReviewHash] = useState<string | null>(null);
   const [existingContract, setExistingContract] = useState<RentalContract | null>(null);
   const [showFullIbanInPreview, setShowFullIbanInPreview] = useState<boolean>(false);
   const [showShareModal, setShowShareModal] = useState<boolean>(false);
@@ -4077,6 +4086,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
 
         if (res.ok && data.success) {
           setRentalData(data.rental);
+          setReviewHash(data.review_hash);
           if (data.contract) {
             setExistingContract(data.contract);
             setFormData({
@@ -4091,7 +4101,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
               email: data.contract.email || '',
               iban: formatIban(data.contract.iban || ''),
               deposit_amount: data.contract.deposit_amount !== undefined ? Number(data.contract.deposit_amount) : 50.00,
-              fee_amount: data.contract.fee_amount !== undefined ? Number(data.contract.fee_amount) : (data.rental?.fee_total || 60.00)
+              fee_amount: data.contract.fee_amount !== undefined ? Number(data.contract.fee_amount) : (data.rental?.fee_total ?? 60.00)
             });
             if (data.contract.status === 'signed' || initialMode === 'preview') {
               setMode('preview');
@@ -4193,6 +4203,8 @@ const ContractModal: React.FC<ContractModalProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         setExistingContract(data.contract);
+        if (data.rental) setRentalData(data.rental);
+        if (data.review_hash) setReviewHash(data.review_hash);
         actionHaptic('success');
         setSuccess('Vertragsdaten erfolgreich gespeichert!');
         if (onContractSaved) {
@@ -4237,13 +4249,16 @@ const ContractModal: React.FC<ContractModalProps> = ({
         },
         body: JSON.stringify({
           signature_data: signatureData,
-          signer_name: signerNameInput
+          signer_name: signerNameInput,
+          review_hash: reviewHash
         })
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
         setExistingContract(data.contract);
+        if (data.rental) setRentalData(data.rental);
+        if (data.review_hash) setReviewHash(data.review_hash);
         setShowSignatureModal(false);
         actionHaptic('success');
         setSuccess('Vertrag erfolgreich verbindlich unterschrieben und als PDF archiviert!');
@@ -4289,7 +4304,7 @@ const ContractModal: React.FC<ContractModalProps> = ({
     }
   };
 
-  const equipmentList = existingContract?.equipment_snapshot && existingContract.equipment_snapshot.length > 0
+  const equipmentList = isSigned && existingContract?.equipment_snapshot && existingContract.equipment_snapshot.length > 0
     ? existingContract.equipment_snapshot
     : (rentalData?.active_items || []);
 
@@ -5183,6 +5198,7 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
     rental: any;
     equipment: any[];
     expires_at: string;
+    review_hash: string;
   } | null>(null);
 
   // Externer Signierlink startet bewusst mit der Dateneingabe. Erst danach folgt die Vertragsvorschau.
@@ -5320,6 +5336,7 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
 
       const data = await res.json();
       if (res.ok && data.success) {
+        setContractData(data);
         setSuccess('Ihre Angaben wurden übernommen. Bitte prüfen Sie jetzt den vollständigen Vertrag.');
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
@@ -5377,7 +5394,8 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
         body: JSON.stringify({
           token,
           signature_data: signatureData,
-          signer_name: signerNameInput
+          signer_name: signerNameInput,
+          review_hash: contractData?.review_hash
         })
       });
 
@@ -5453,7 +5471,7 @@ const PublicContractView: React.FC<PublicContractViewProps> = ({ token }) => {
   const { rental, equipment } = contractData;
   const rentedAtDate = rental?.rented_at || new Date().toISOString().split('T')[0];
   const dueDate = rental?.due_date || calculateDueDate(rentedAtDate);
-  const feeAmount = contractData.contract.fee_amount !== undefined ? Number(contractData.contract.fee_amount) : (rental?.fee_total || 60.00);
+  const feeAmount = contractData.contract.fee_amount !== undefined ? Number(contractData.contract.fee_amount) : (rental?.fee_total ?? 60.00);
   const depositAmount = contractData.contract.deposit_amount !== undefined ? Number(contractData.contract.deposit_amount) : 50.00;
   const totalAmount = feeAmount + depositAmount;
 
