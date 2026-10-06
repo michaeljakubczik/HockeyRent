@@ -658,33 +658,49 @@ export default function App() {
 
   // Alles zurückgeben (kompletter Verleihvorgang beenden)
   const handleReturnRental = async (rentalId: number) => {
+    const previousRental = history.find(r => r.id === rentalId);
+    if (!previousRental) return;
+
     actionHaptic('tap');
-    setLoading(true);
     setError(null);
+
+    // Sofort aus "Aktuell" entfernen. Die Datenbank arbeitet danach im Hintergrund.
+    const optimisticReturnedAt = new Date().toISOString().split('T')[0];
+    setHistory(prev => prev.map(r => r.id === rentalId ? { ...r, returned_at: optimisticReturnedAt } : r));
+    setRentalsSubTab('completed');
     setSuccess('Rückgabe wird gespeichert …');
+
     try {
       const res = await fetch(`${API_BASE}/rentals/${rentalId}/return`, {
         method: 'POST',
         headers: { 'x-admin-password': password }
       });
-      if (res.ok) {
-        if (editingBundleRental?.id === rentalId) {
-          setEditingBundleRental(null);
-        }
-        await fetchItems(password);
-        setCurrentView('history');
-        setRentalsSubTab('completed');
-        actionHaptic('success');
-        setSuccess('Ausleihe vollständig zurückgegeben.');
-        setTimeout(() => setSuccess(null), 3000);
-      } else {
-        const data: ApiResponse = await res.json();
+
+      if (!res.ok) {
+        const data: ApiResponse = await res.json().catch(() => ({ success: false }));
+        setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
+        setRentalsSubTab('active');
+        actionHaptic('error');
+        setSuccess(null);
         setError(data.message || 'Fehler bei der Rückgabe');
+        return;
       }
+
+      if (editingBundleRental?.id === rentalId) {
+        setEditingBundleRental(null);
+      }
+      actionHaptic('success');
+      setSuccess('Ausleihe vollständig zurückgegeben.');
+      window.setTimeout(() => setSuccess(null), 2500);
+
+      // Serverstand nachziehen, ohne die sichtbare Rückmeldung darauf warten zu lassen.
+      void fetchItems(password);
     } catch (err) {
+      setHistory(prev => prev.map(r => r.id === rentalId ? previousRental : r));
+      setRentalsSubTab('active');
+      actionHaptic('error');
+      setSuccess(null);
       setError('Fehler bei der Rückgabe');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -786,8 +802,8 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
-        method: 'PATCH',
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/payment-status`, {
+        method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'x-admin-password': password 
