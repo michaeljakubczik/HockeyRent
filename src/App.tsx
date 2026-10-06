@@ -1117,8 +1117,8 @@ export default function App() {
     actionHaptic('tap');
 
     try {
-      const res = await fetch(`${API_BASE}/rentals/${rentalId}`, {
-        method: 'PATCH',
+      const res = await fetch(`${API_BASE}/rentals/${rentalId}/payment-status`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-admin-password': password
