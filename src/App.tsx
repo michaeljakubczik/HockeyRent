@@ -1963,7 +1963,7 @@ export default function App() {
                         onExchangeItem={(item) => startExchange(rental, item)}
                         onAddItem={() => startAddItem(rental)}
                         onEditBundle={() => setEditingBundleRental(rental)}
-                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
+                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: rental.contract?.status === 'signed' ? 'Diese Ausleihe einschließlich des unterschriebenen Vertragsdatensatzes wirklich löschen? Das lässt sich nicht rückgängig machen.' : 'Möchtest du diese laufende Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: rental.contract?.status === 'signed' ? 'preview' : 'form' })}
                         onOpenSigningLink={(rId) => setShareSigningRentalId(rId)}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
@@ -1987,7 +1987,7 @@ export default function App() {
                         onToggle={() => toggleRentalAccordion(rental.id, false)}
                         onMarkAsPaid={(paidState?: boolean) => handleMarkAsPaid(rental.id, paidState !== undefined ? paidState : !rental.paid)}
                         isPaymentPending={paymentPendingRentalIds.has(rental.id)}
-                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
+                        onDelete={() => setConfirmDelete({ type: 'history', id: rental.id, title: 'Ausleihe löschen?', message: rental.contract?.status === 'signed' ? 'Diese Ausleihe einschließlich des unterschriebenen Vertragsdatensatzes wirklich löschen? Das lässt sich nicht rückgängig machen.' : 'Möchtest du diese abgeschlossene Ausleihe wirklich löschen?' })}
                         onOpenContract={() => setContractModal({ isOpen: true, rentalId: rental.id, mode: 'preview' })}
                         onDownloadPdf={() => handleDownloadPdf(rental.id)}
                       />

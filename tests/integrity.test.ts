@@ -79,10 +79,13 @@ test('contract changes invalidate review; signed contract and dates remain immut
   assert.equal(signed.contract.rental_snapshot.rented_at,'2026-01-31');
   await assert.rejects(contract(db,'save',id,fields),/unterschrieben/);
   await assert.rejects(mutate(db,'details',{id,due_date:'2027-01-01'}),/Unterschriebene/);
-  await assert.rejects(mutate(db,'delete',{id}),/erhalten/);
+  await assert.rejects(db.exec('delete from hockey_rental_contracts'),/unveränderlich/);
   await assert.rejects(db.exec("update hockey_rental_contracts set status='draft'"),/unveränderlich/);
   await mutate(db,'payment',{id,paid:true});
   await mutate(db,'return',{id});
+  await mutate(db,'delete',{id});
+  assert.equal((await db.query<any>('select count(*) n from hockey_rental_contracts')).rows[0].n,0);
+  assert.equal((await db.query<any>('select count(*) n from hockey_contract_deliveries')).rows[0].n,0);
  } finally { await db.close(); }
 });
 
@@ -109,5 +112,28 @@ test('database functions cannot be called by anonymous clients',async()=>{
   await db.exec('set role anon');
   await assert.rejects(mutate(db,'payment',{id:1,paid:true}),/permission denied/);
   await assert.rejects(contract(db,'link',1,{}),/permission denied/);
+ } finally { await db.close(); }
+});
+
+
+test('signed active rental deletion clears its dependents and frees only its own active equipment',async()=>{
+ const db=await database();
+ try {
+  const {rentalId:id}=await seed(db);
+  await contract(db,'save',id,fields);
+  const reviewed=await contract(db,'preview',id);
+  await contract(db,'sign',id,{signed_at:new Date().toISOString(),pdf_path:'test.pdf',pdf_sha256:'abc',signer_name:'Test',signature_data:'test',contract_version:'test'},null,reviewed.review_hash);
+  await mutate(db,'single_return',{id,item_id:1});
+  const other=await mutate(db,'create',{renter_name:'Other',item_ids:[1],fee_total:60,rented_at:'2026-03-01'});
+  assert.equal((await db.query<any>('select count(*) n from hockey_contract_deliveries where rental_id=$1',[id])).rows[0].n,2);
+  await mutate(db,'delete',{id});
+  for(const table of ['hockey_rentals','hockey_rental_items','hockey_rental_contracts','hockey_contract_deliveries']) {
+   assert.equal((await db.query<any>(`select count(*) n from ${table} where ${table==='hockey_rentals'?'id':'rental_id'}=$1`,[id])).rows[0].n,0);
+  }
+  const items=(await db.query<any>('select id,status from hockey_equipment_items where id in (1,2) order by id')).rows;
+  assert.equal(items[0].status,'verliehen');
+  assert.equal(items[1].status,'verfügbar');
+  assert.equal((await db.query<any>('select count(*) n from hockey_rentals where id=$1',[other.rentalId])).rows[0].n,1);
+  await assert.rejects(mutate(db,'delete',{id}),/nicht gefunden/);
  } finally { await db.close(); }
 });

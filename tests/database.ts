@@ -14,6 +14,7 @@ export async function database() {
  await db.exec(readFileSync('supabase/migrations/20261006075151_integrity_and_contracts.sql','utf8'));
  await db.exec(readFileSync('supabase/migrations/20261006103140_contract_mail_outbox.sql','utf8'));
  await db.exec(readFileSync('supabase/migrations/20261006130528_history_summary.sql','utf8'));
+ await db.exec(readFileSync('supabase/migrations/20261006133931_signed_rental_deletion.sql','utf8'));
  return db;
 }
 export async function mutate(db:PGlite,action:string,data:any) {

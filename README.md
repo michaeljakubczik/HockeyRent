@@ -41,3 +41,5 @@ Integration tests cover return rollback, item membership, duplicate/missing IDs,
 New equipment photos are resized to at most 800 px on the longest side and compressed as WebP (JPEG fallback), with an upload size cap. Original existing photos are retained. Inventory reads return the lifetime rental count and current borrower without transferring past rental relationships.
 
 The UI uses `/api/history?page=1`: all open rentals plus 25 completed rentals per page, a global paid revenue total and global counters. Changing history pages reuses already loaded equipment photos. The legacy array response without `page` remains available for older clients. Server-only read functions and indexes are in `20261006130528_history_summary.sql`.
+
+Admin-confirmed rental deletion also removes signed contract records and their mail jobs. Signed contracts still cannot be edited or deleted independently while their rental exists. Archived PDF objects are retained in private storage; deleting a rental does not delete other rentals or equipment.
